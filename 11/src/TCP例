@@ -1,0 +1,50 @@
+// main.cpp
+#include <Arduino.h>
+#include "myTcp.h"
+
+void setup()
+{
+    Serial.begin(115200);
+    delay(2000);
+
+    // 两行搞定网络
+    tcpConnectWiFi();
+    tcpBegin();
+}
+
+void loop()
+{
+    // 收消息
+    String cmd = tcpReceive();
+
+    // 没消息就跳过
+    if (cmd.length() == 0)
+        return;
+
+    // ==================== 在这里自定义你的命令 ====================
+
+    if (cmd == "hello")
+    {
+        tcpSend("你好！我是 ESP32");
+    }
+    else if (cmd == "led on")
+    {
+        digitalWrite(LED_BUILTIN, HIGH);
+        tcpSend("LED 已开");
+    }
+    else if (cmd == "led off")
+    {
+        digitalWrite(LED_BUILTIN, LOW);
+        tcpSend("LED 已关");
+    }
+    else if (cmd == "who are you")
+    {
+        tcpSend("ESP32-S3 开发板");
+    }
+    else
+    {
+        tcpSend("未知命令: " + cmd);
+    }
+
+    // ============================================================
+}
