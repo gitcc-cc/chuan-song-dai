@@ -18,13 +18,13 @@ from core.controller import Controller
 from datetime import datetime
 import threading
 
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QSlider, QLineEdit, QTextEdit,
     QFrame, QGroupBox, QMessageBox, QSplitter
 )
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QObject
-from PyQt5.QtGui import QFont, QColor, QPalette
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
+from PyQt6.QtGui import QFont, QColor, QPalette
 
 # 状态轮询间隔（毫秒）
 POLL_INTERVAL = 500
@@ -37,7 +37,7 @@ class WorkerSignals(QObject):
     """
     Qt 信号集合
     用于后台线程与界面线程之间的安全通信。
-    PyQt5 的界面只能在主线程更新，后台线程需要通过信号通知主线程。
+    PyQt6 的界面只能在主线程更新，后台线程需要通过信号通知主线程。
     """
     connected = pyqtSignal()       # 连接成功信号
     disconnected = pyqtSignal()    # 断开连接信号
@@ -117,7 +117,7 @@ class ESP32MainWindow(QMainWindow):
 
         # 标题
         title = QLabel("ESP32 控制中心")
-        title.setFont(QFont("Microsoft YaHei", 18, QFont.Bold))
+        title.setFont(QFont("Microsoft YaHei", 18, QFont.Weight.Bold))
         title.setStyleSheet("color: #333333; border: none;")
         header_layout.addWidget(title)
         header_layout.addSpacing(30)
@@ -186,7 +186,7 @@ class ESP32MainWindow(QMainWindow):
         main_layout.addWidget(header)
 
         # ---------- 中间区域：左侧状态 + 右侧控制（可拖拽调整宽度） ----------
-        horizontal_splitter = QSplitter(Qt.Horizontal)
+        horizontal_splitter = QSplitter(Qt.Orientation.Horizontal)
         horizontal_splitter.setStyleSheet("""
             QSplitter::handle {
                 background-color: #e0e0e0;
@@ -228,7 +228,7 @@ class ESP32MainWindow(QMainWindow):
 
             row_layout = QHBoxLayout(row_container)
             row_layout.setContentsMargins(12, 0, 12, 0)
-            row_layout.setAlignment(Qt.AlignCenter)
+            row_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
             # 状态名称标签（左侧）
             lbl_name = QLabel(name)
@@ -236,7 +236,7 @@ class ESP32MainWindow(QMainWindow):
                 "color: #333333; font-size: 16px; font-weight: bold; background:transparent;"
             )
             lbl_name.setFixedWidth(110)
-            lbl_name.setAlignment(Qt.AlignCenter)
+            lbl_name.setAlignment(Qt.AlignmentFlag.AlignCenter)
             row_layout.addWidget(lbl_name)
 
             # 状态值标签（右侧，后续会动态更新）
@@ -244,7 +244,7 @@ class ESP32MainWindow(QMainWindow):
             lbl_value.setStyleSheet(
                 f"color: {color}; font-size: 16px; font-weight: bold; background:transparent;"
             )
-            lbl_value.setAlignment(Qt.AlignCenter)
+            lbl_value.setAlignment(Qt.AlignmentFlag.AlignCenter)
             row_layout.addWidget(lbl_value, stretch=1)
 
             # 保存引用，用名称作为键
@@ -262,13 +262,13 @@ class ESP32MainWindow(QMainWindow):
         # -- 速度控制区域 --
         speed_group = QGroupBox("速度控制")
         speed_layout = QVBoxLayout(speed_group)
-        speed_layout.setAlignment(Qt.AlignVCenter)
+        speed_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         slider_layout = QHBoxLayout()
-        slider_layout.setAlignment(Qt.AlignVCenter)
+        slider_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         # 速度滑块（0~13）
-        self.speed_slider = QSlider(Qt.Horizontal)
+        self.speed_slider = QSlider(Qt.Orientation.Horizontal)
         self.speed_slider.setRange(0, 13)
         self.speed_slider.setValue(0)
         self.speed_slider.valueChanged.connect(self._on_slider_change)
@@ -278,7 +278,7 @@ class ESP32MainWindow(QMainWindow):
         # 速度输入框（可直接输入数字）
         self.speed_entry = QLineEdit("0")
         self.speed_entry.setFixedWidth(55)
-        self.speed_entry.setAlignment(Qt.AlignCenter)
+        self.speed_entry.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.speed_entry.returnPressed.connect(self._on_entry_change)
         slider_layout.addWidget(self.speed_entry)
 
@@ -336,7 +336,7 @@ class ESP32MainWindow(QMainWindow):
         )
         cmd_layout = QHBoxLayout(cmd_frame)
         cmd_layout.setContentsMargins(10, 10, 10, 10)
-        cmd_layout.setAlignment(Qt.AlignVCenter)
+        cmd_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         prompt = QLabel(">")
         prompt.setStyleSheet("color: #07C160; font-size: 18px; font-weight: bold; border: none;")
@@ -366,7 +366,7 @@ class ESP32MainWindow(QMainWindow):
         log_layout.addWidget(self.log_text)
 
         # 纵向分割条：上半部分（状态+控制） vs 下半部分（指令+日志）
-        vertical_splitter = QSplitter(Qt.Vertical)
+        vertical_splitter = QSplitter(Qt.Orientation.Vertical)
         vertical_splitter.setStyleSheet("""
             QSplitter::handle {
                 background-color: #e0e0e0;
@@ -477,10 +477,10 @@ class ESP32MainWindow(QMainWindow):
         reply = QMessageBox.question(
             self, "连接失败",
             f"无法连接到 {addr}\n\n是否重试？",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes
         )
-        if reply == QMessageBox.Yes:
+        if reply == QMessageBox.StandardButton.Yes:
             self._on_connect_clicked()
         else:
             self.signals.log_message.emit(f"连接失败，已取消：{addr}")
@@ -726,5 +726,5 @@ class ESP32MainWindow(QMainWindow):
     # ============================================================
     def keyPressEvent(self, event):
         """Esc 键关闭窗口"""
-        if event.key() == Qt.Key_Escape:
+        if event.key() == Qt.Key.Key_Escape:
             self.close()
