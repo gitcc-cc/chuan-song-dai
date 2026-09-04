@@ -82,3 +82,8 @@ ESP32-S3 智能传送带控制系统 — 未来规划
   10. 记录操作日志
 
   状态：未完成
+
+新页面只需继承 BasePage，在 app_shell._register_pages() 注册即可
+深度相机：继承 BaseCamera 写 RealSenseCamera，上层不动
+模型转 TensorRT/ONNX：只改 Detector.infer 内部，接口不变
+类别→指令：在 future_group 区域加配置 UI，检测到目标类别时发 ESP32Client 命令

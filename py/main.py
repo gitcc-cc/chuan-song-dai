@@ -1,21 +1,18 @@
 """
 ESP32 控制中心 - 主程序入口
 ============================
-启动 PyQt6 应用，创建并显示主窗口。
-不包含任何业务逻辑或界面细节。
+启动 PyQt6 应用，创建并显示主窗口 (AppShell)。
 """
 import sys
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QColor, QPalette
 
-from ui.main_window import ESP32MainWindow
+from ui.app_shell import AppShell
 
 
 if __name__ == "__main__":
-    # 创建 Qt 应用
     app = QApplication(sys.argv)
 
-    # 设置全局调色板（基础颜色）
     palette = QPalette()
     palette.setColor(QPalette.ColorRole.Window, QColor("#ededed"))
     palette.setColor(QPalette.ColorRole.WindowText, QColor("#333333"))
@@ -25,9 +22,7 @@ if __name__ == "__main__":
     palette.setColor(QPalette.ColorRole.ButtonText, QColor("#333333"))
     app.setPalette(palette)
 
-    # 创建主窗口并最大化显示
-    window = ESP32MainWindow()
+    window = AppShell()
     window.showMaximized()
 
-    # 启动事件循环
     sys.exit(app.exec())
