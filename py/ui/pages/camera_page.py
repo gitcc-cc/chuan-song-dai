@@ -129,9 +129,15 @@ class CameraPage(BasePage):
         param_layout.addWidget(self.slider_conf)
 
         self.slider_iou = ParamSlider("IoU 阈值", 0.0, 1.0,
-                                      default=0.45, step=0.01, decimals=2)
+                                       default=0.45, step=0.01, decimals=2)
         self.slider_iou.value_changed.connect(self._on_param_changed)
         param_layout.addWidget(self.slider_iou)
+
+        self.slider_interval = ParamSlider("推理间隔（帧）", 1, 30,
+                                           default=1, step=1, decimals=0)
+        self.slider_interval.setToolTip("数值越大越省性能，1=每帧推理")
+        self.slider_interval.value_changed.connect(self._on_interval_changed)
+        param_layout.addWidget(self.slider_interval)
 
         left_layout.addWidget(param_group)
 
@@ -165,6 +171,46 @@ class CameraPage(BasePage):
         toolbar = QHBoxLayout()
         toolbar.setContentsMargins(0, 0, 0, 0)
 
+        # 拍照按钮（保存当前帧）
+        self.btn_snapshot = QPushButton()
+        self.btn_snapshot.setFixedSize(40, 40)
+        self.btn_snapshot.setToolTip("保存当前帧为图片")
+        self.btn_snapshot.setStyleSheet("""
+            QPushButton {
+                background-color: #f0f0f0;
+                border: none;
+                border-radius: 6px;
+            }
+            QPushButton:hover { background-color: #e0e0e0; }
+        """)
+        if _HAS_QTA:
+            self.btn_snapshot.setIcon(qta.icon("fa5s.camera", color="#333", scale_factor=1.2))
+            self.btn_snapshot.setIconSize(self.btn_snapshot.size() * 0.6)
+        else:
+            self.btn_snapshot.setText("📷")
+        self.btn_snapshot.clicked.connect(self._on_snapshot)
+        toolbar.addWidget(self.btn_snapshot)
+
+        # 检测一次按钮
+        self.btn_detect_once = QPushButton()
+        self.btn_detect_once.setFixedSize(40, 40)
+        self.btn_detect_once.setToolTip("检测一次（只推理一帧）")
+        self.btn_detect_once.setStyleSheet("""
+            QPushButton {
+                background-color: #f0f0f0;
+                border: none;
+                border-radius: 6px;
+            }
+            QPushButton:hover { background-color: #e0e0e0; }
+        """)
+        if _HAS_QTA:
+            self.btn_detect_once.setIcon(qta.icon("fa5s.hand-pointer", color="#333", scale_factor=1.2))
+            self.btn_detect_once.setIconSize(self.btn_detect_once.size() * 0.6)
+        else:
+            self.btn_detect_once.setText("1x")
+        self.btn_detect_once.clicked.connect(self._on_detect_once)
+        toolbar.addWidget(self.btn_detect_once)
+
         # 相机按钮（开始/停止检测）
         self.btn_camera = QPushButton()
         self.btn_camera.setCheckable(True)
@@ -185,6 +231,35 @@ class CameraPage(BasePage):
         self._update_camera_btn_icon(False)
         self.btn_camera.toggled.connect(self._on_camera_toggled)
         toolbar.addWidget(self.btn_camera)
+
+        # 坐标显示按钮
+        self.btn_coords = QPushButton()
+        self.btn_coords.setCheckable(True)
+        self.btn_coords.setFixedSize(40, 40)
+        self.btn_coords.setToolTip("显示检测框中心坐标")
+        self.btn_coords.setStyleSheet("""
+            QPushButton {
+                background-color: #f0f0f0;
+                border: none;
+                border-radius: 6px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #e0e0e0; }
+            QPushButton:checked {
+                background-color: #07C160;
+                border: 2px solid #059648;
+                color: white;
+            }
+            QPushButton:checked:hover { background-color: #06AD56; }
+        """)
+        if _HAS_QTA:
+            self.btn_coords.setIcon(qta.icon("fa5s.crosshairs", color="#333", scale_factor=1.2))
+            self.btn_coords.setIconSize(self.btn_coords.size() * 0.6)
+        else:
+            self.btn_coords.setText("XY")
+        self.btn_coords.toggled.connect(self._on_coords_toggled)
+        toolbar.addWidget(self.btn_coords)
 
         toolbar.addStretch()
 
@@ -256,6 +331,8 @@ class CameraPage(BasePage):
         # 参数
         self.slider_conf.set_value(self.config.get("conf_threshold", 0.5), emit=False)
         self.slider_iou.set_value(self.config.get("iou_threshold", 0.45), emit=False)
+        self.slider_interval.set_value(self.config.get("inference_interval", 1), emit=False)
+        self._worker.set_inference_interval(int(self.slider_interval.get_value()))
 
         # 启动时检测摄像头并打开
         self._detect_and_open()
@@ -316,12 +393,13 @@ class CameraPage(BasePage):
         ok = self._camera.open(index, width=-1, height=-1, fps=-1)
         if not ok:
             # 如果指定索引失败，尝试列表中的第一个可用摄像头
-            cams = BaseCamera.list_cameras(5)
+            cams = BaseCamera.list_cameras(10)
             if cams:
-                self._set_status(f"摄像头 {index} 打开失败，尝试摄像头 {cams[0]}...")
-                ok = self._camera.open(cams[0], width=-1, height=-1, fps=-1)
+                fallback = cams[0]
+                self._set_status(f"摄像头 {index} 打开失败，尝试 {fallback['name']}...")
+                ok = self._camera.open(fallback["index"], width=-1, height=-1, fps=-1)
                 if ok:
-                    index = cams[0]
+                    index = fallback["index"]
                     # 更新下拉框
                     for i in range(self.cam_combo.count()):
                         if self.cam_combo.itemData(i) == index:
@@ -362,6 +440,13 @@ class CameraPage(BasePage):
         # 保存配置
         self.config.set("conf_threshold", self.slider_conf.get_value())
         self.config.set("iou_threshold", self.slider_iou.get_value())
+        self.config.save()
+
+    def _on_interval_changed(self, value: float):
+        """推理间隔变化"""
+        interval = int(value)
+        self._worker.set_inference_interval(interval)
+        self.config.set("inference_interval", interval)
         self.config.save()
 
     def _on_camera_toggled(self, checked: bool):
@@ -415,6 +500,49 @@ class CameraPage(BasePage):
         else:
             self.btn_camera.setText("■" if checked else "▶")
 
+    def _on_coords_toggled(self, checked: bool):
+        """坐标显示切换"""
+        self.camera_view.set_show_coords(checked)
+        if _HAS_QTA:
+            color = "#ffffff" if checked else "#333333"
+            self.btn_coords.setIcon(qta.icon("fa5s.crosshairs", color=color, scale_factor=1.2))
+            self.btn_coords.setIconSize(self.btn_coords.size() * 0.6)
+
+    def _on_snapshot(self):
+        """保存当前帧为图片"""
+        if not self._camera.is_opened():
+            QMessageBox.warning(self, "拍照失败", "摄像头未打开")
+            return
+        ret, frame = self._camera.read()
+        if not ret or frame is None:
+            self._set_status("拍照失败：无法读取帧")
+            return
+        import cv2
+        from datetime import datetime
+        snapshot_dir = os.path.join(os.path.dirname(__file__), "..", "snapshots")
+        os.makedirs(snapshot_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = os.path.join(snapshot_dir, f"snapshot_{timestamp}.jpg")
+        cv2.imwrite(filename, frame)
+        self._set_status(f"已保存: {filename}")
+
+    def _on_detect_once(self):
+        """检测一次（只推理一帧）"""
+        if not self._model_loaded:
+            QMessageBox.warning(self, "未加载模型", "请先选择 .pt 模型文件")
+            return
+        if not self._camera.is_opened():
+            QMessageBox.warning(self, "摄像头未打开", "请先选择摄像头")
+            return
+        self._det_id_counter = 0
+        self.detection_table.clear_all()
+        self._worker.set_params(
+            conf=self.slider_conf.get_value(),
+            iou=self.slider_iou.get_value()
+        )
+        self._worker.trigger_once()
+        self._set_status("单次检测中...")
+
     @pyqtSlot(list)
     def _on_detections_ready(self, detections: List[Dict[str, Any]]):
         """收到检测结果"""
@@ -462,19 +590,20 @@ class CameraPage(BasePage):
         self.cam_combo.clear()
 
         saved_idx = self.config.get("camera_index", 0)
-        cams = BaseCamera.list_cameras(5)
+        cams = BaseCamera.list_cameras(10)  # 返回 [{"name":..., "index":...}, ...]
         if not cams:
             self.cam_combo.addItem("未检测到摄像头", -1)
             self._set_status("未检测到可用摄像头，请检查连接")
             self.cam_combo.blockSignals(False)
             return
 
-        for idx in cams:
-            self.cam_combo.addItem(f"摄像头 {idx}", idx)
-        self._set_status(f"检测到 {len(cams)} 个摄像头: {cams}")
+        for dev in cams:
+            self.cam_combo.addItem(dev["name"], dev["index"])
+        cam_names = [d["name"] for d in cams]
+        self._set_status(f"检测到 {len(cams)} 个摄像头: {cam_names}")
 
         # 自动选中保存的索引（或第一个）
-        target = saved_idx if saved_idx in cams else cams[0]
+        target = saved_idx if saved_idx in [d["index"] for d in cams] else cams[0]["index"]
         for i in range(self.cam_combo.count()):
             if self.cam_combo.itemData(i) == target:
                 self.cam_combo.setCurrentIndex(i)
@@ -488,4 +617,5 @@ class CameraPage(BasePage):
         """保存状态"""
         self.config.set("conf_threshold", self.slider_conf.get_value())
         self.config.set("iou_threshold", self.slider_iou.get_value())
+        self.config.set("inference_interval", int(self.slider_interval.get_value()))
         self.config.save()

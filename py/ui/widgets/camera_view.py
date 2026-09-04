@@ -34,6 +34,7 @@ class CameraView(QLabel):
         # 显示选项
         self._show_fps = True
         self._show_labels = True
+        self._show_coords = False  # 是否显示坐标
         self._current_fps = 0.0
 
         # 画笔
@@ -64,6 +65,9 @@ class CameraView(QLabel):
 
     def set_show_labels(self, show: bool):
         self._show_labels = show
+
+    def set_show_coords(self, show: bool):
+        self._show_coords = show
 
     def clear(self):
         self._frame = None
@@ -157,6 +161,9 @@ class CameraView(QLabel):
             if self._show_labels:
                 # 标签背景
                 label_text = f"{cls_name} {conf:.2f}"
+                if self._show_coords:
+                    cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
+                    label_text += f" ({cx},{cy})"
                 painter.setFont(self._text_font)
                 fm = painter.fontMetrics()
                 text_w = fm.horizontalAdvance(label_text) + 8

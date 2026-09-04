@@ -2,6 +2,7 @@
 推理工作线程
 ============
 QThread 循环：持续读取摄像头 -> 发射预览帧 -> 可选推理 -> 发射检测结果。
+支持跳帧推理（取模）和单次检测。
 """
 import time
 from typing import List, Dict, Any, Optional
@@ -14,7 +15,7 @@ from vision.detector import Detector
 
 
 class InferenceWorker(QThread):
-    """推理工作线程：持续预览，推理可开关"""
+    """推理工作线程：持续预览，推理可开关，支持跳帧和单次检测"""
 
     # 信号：原始帧、检测结果、FPS
     frame_ready = pyqtSignal(np.ndarray)              # 原始 BGR 帧（预览用）
@@ -35,7 +36,10 @@ class InferenceWorker(QThread):
 
         # 运行控制
         self._running = False          # 线程生命周期
-        self._inference_enabled = False  # 是否做推理（不影响预览）
+        self._inference_enabled = False  # 是否做推理（连续模式）
+        self._one_shot = False         # 单次检测标志
+        self._inference_interval = 1   # 推理间隔（帧取模），1=每帧都推理
+        self._frame_count = 0          # 帧计数器
         self._mutex = QMutex()
 
         # FPS 统计
@@ -57,24 +61,39 @@ class InferenceWorker(QThread):
         if classes is not None:
             self._classes = classes
 
+    def set_inference_interval(self, interval: int):
+        """设置推理间隔（帧取模），1=每帧推理，5=每5帧推理1次"""
+        self._mutex.lock()
+        self._inference_interval = max(1, interval)
+        self._mutex.unlock()
+
     # ============ 线程控制 ============
     def start_preview(self):
         """启动预览循环（不做推理）"""
         if not self._running:
             self._running = True
             self._inference_enabled = False
+            self._one_shot = False
+            self._frame_count = 0
             self.start()
 
     def enable_inference(self):
-        """启用推理（开始检测）"""
+        """启用连续推理"""
         self._mutex.lock()
         self._inference_enabled = True
+        self._one_shot = False
         self._mutex.unlock()
 
     def disable_inference(self):
         """禁用推理（仅预览）"""
         self._mutex.lock()
         self._inference_enabled = False
+        self._mutex.unlock()
+
+    def trigger_once(self):
+        """触发单次检测（只推理一帧）"""
+        self._mutex.lock()
+        self._one_shot = True
         self._mutex.unlock()
 
     def stop(self):
@@ -101,49 +120,47 @@ class InferenceWorker(QThread):
         self._detector.warmup()
         print("[InferenceWorker] 启动预览循环")
 
-        consecutive_failures = 0
-        max_failures = 10
-
         while True:
             # 检查运行标志
             self._mutex.lock()
             running = self._running
             inference_enabled = self._inference_enabled
+            one_shot = self._one_shot
+            interval = self._inference_interval
+            if one_shot:
+                self._one_shot = False  # 取走标志
             self._mutex.unlock()
 
             if not running:
                 break
 
-            # 1) 读取帧
+            # 1) 读取帧（摄像头全速，不停）
             ret, frame = self._camera.read()
             if not ret or frame is None:
-                # 这里不计数失败，直接继续尝试
                 time.sleep(0.01)
                 continue
 
             # 2) 发射原始帧（预览，始终发）
-            self.frame_ready.emit(frame.copy())  # copy 避免数据被覆盖
+            self.frame_ready.emit(frame.copy())
 
-            # 3) 如果启用推理，做推理
-            inference_enabled = False
-            self._mutex.lock()
-            inference_enabled = self._inference_enabled
-            self._mutex.unlock()
+            # 3) 判断是否需要推理（连续模式 或 单次触发）
+            should_infer = False
+            if inference_enabled or one_shot:
+                self._frame_count += 1
+                if self._frame_count % interval == 0:
+                    should_infer = True
 
-            if inference_enabled:
-                start = time.perf_counter()
+            # 4) 执行推理
+            if should_infer:
                 detections = self._detector.infer(
                     frame,
                     conf_threshold=self._conf_threshold,
                     iou_threshold=self._iou_threshold,
                     classes=self._classes
                 )
-                infer_time = time.perf_counter() - start
-
-                # 发射检测结果
                 self.detections_ready.emit(detections)
 
-            # 4) 计算并发射 FPS（预览帧率）
+            # 5) 计算并发射 FPS
             self._frame_times.append(time.perf_counter())
             cutoff = self._frame_times[-1] - 1.0
             self._frame_times = [t for t in self._frame_times if t > cutoff]
@@ -153,11 +170,5 @@ class InferenceWorker(QThread):
             if now - self._last_fps_emit > 0.5:
                 self.fps_updated.emit(fps)
                 self._last_fps_emit = now
-
-            # 简单限帧：目标 ~30 FPS
-            target_interval = 1.0 / 30.0
-            elapsed = time.perf_counter() - (self._frame_times[-1] if self._frame_times else time.perf_counter())
-            if elapsed < target_interval:
-                time.sleep(target_interval - elapsed)
 
         print("[InferenceWorker] 预览循环结束")
