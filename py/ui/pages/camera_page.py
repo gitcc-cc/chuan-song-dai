@@ -247,24 +247,18 @@ class CameraPage(BasePage):
         self._worker.error_occurred.connect(self._on_worker_error)
 
     def _load_saved_config(self):
-        """加载保存的配置"""
+        """加载保存的配置（启动时检测摄像头并打开）"""
         # 模型路径
         model_path = self.config.get("model_path", "")
         if model_path and os.path.exists(model_path):
             self._load_model(model_path)
 
-        # 摄像头索引
-        cam_idx = self.config.get("camera_index", 0)
-        self._open_camera(cam_idx)
-        # 更新下拉框选中
-        for i in range(self.cam_combo.count()):
-            if self.cam_combo.itemData(i) == cam_idx:
-                self.cam_combo.setCurrentIndex(i)
-                break
-
         # 参数
         self.slider_conf.set_value(self.config.get("conf_threshold", 0.5), emit=False)
         self.slider_iou.set_value(self.config.get("iou_threshold", 0.45), emit=False)
+
+        # 启动时检测摄像头并打开
+        self._detect_and_open()
 
     # ============ 事件处理 ============
     def _on_select_model(self):
@@ -298,24 +292,13 @@ class CameraPage(BasePage):
             self._set_status("模型加载失败")
 
     def _refresh_cameras(self):
-        """刷新摄像头列表"""
-        self._set_status("正在检测摄像头...")
-        self.cam_combo.blockSignals(True)
-        self.cam_combo.clear()
-        cams = BaseCamera.list_cameras(5)
-        if not cams:
-            self.cam_combo.addItem("未检测到摄像头", -1)
-            self._set_status("未检测到可用摄像头，请检查连接")
-        else:
-            for idx in cams:
-                self.cam_combo.addItem(f"摄像头 {idx}", idx)
-            self._set_status(f"检测到 {len(cams)} 个摄像头: {cams}")
-        self.cam_combo.blockSignals(False)
+        """手动刷新摄像头列表"""
+        self._detect_and_open()
 
     def _on_camera_changed(self, index: int):
         """切换摄像头"""
         cam_idx = self.cam_combo.itemData(index)
-        if cam_idx >= 0:
+        if cam_idx is not None and cam_idx >= 0:
             self._set_status(f"正在切换到摄像头 {cam_idx}...")
             self._open_camera(cam_idx)
 
@@ -465,14 +448,41 @@ class CameraPage(BasePage):
 
     # ============ BasePage 生命周期 ============
     def on_show(self):
-        """页面显示：刷新摄像头列表"""
-        self._refresh_cameras()
+        """页面显示：不重新检测，直接用已打开的摄像头"""
         self._set_status("就绪")
 
     def on_hide(self):
-        """页面隐藏：停止推理、释放摄像头"""
+        """页面隐藏：停止推理，但保留摄像头和 worker（快速恢复）"""
         self._stop_inference()
-        self._worker.stop()
+
+    def _detect_and_open(self):
+        """检测摄像头并打开（启动时或手动刷新时调用）"""
+        self._set_status("正在检测摄像头...")
+        self.cam_combo.blockSignals(True)
+        self.cam_combo.clear()
+
+        saved_idx = self.config.get("camera_index", 0)
+        cams = BaseCamera.list_cameras(5)
+        if not cams:
+            self.cam_combo.addItem("未检测到摄像头", -1)
+            self._set_status("未检测到可用摄像头，请检查连接")
+            self.cam_combo.blockSignals(False)
+            return
+
+        for idx in cams:
+            self.cam_combo.addItem(f"摄像头 {idx}", idx)
+        self._set_status(f"检测到 {len(cams)} 个摄像头: {cams}")
+
+        # 自动选中保存的索引（或第一个）
+        target = saved_idx if saved_idx in cams else cams[0]
+        for i in range(self.cam_combo.count()):
+            if self.cam_combo.itemData(i) == target:
+                self.cam_combo.setCurrentIndex(i)
+                break
+        self.cam_combo.blockSignals(False)
+
+        # 打开摄像头 + 启动 worker
+        self._open_camera(target)
 
     def save_state(self):
         """保存状态"""
