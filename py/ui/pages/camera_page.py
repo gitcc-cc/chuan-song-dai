@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QComboBox, QLabel, QFileDialog, QMessageBox,
     QSizePolicy
 )
-from PyQt6.QtCore import Qt, pyqtSlot
+from PyQt6.QtCore import Qt, pyqtSlot, QThread
 from PyQt6.QtGui import QFont, QIcon
 
 try:
@@ -44,6 +44,25 @@ from PyQt6.QtCore import QObject, pyqtSignal
 class WorkerSignals(QObject):
     """Qt 信号集合"""
     log_message = pyqtSignal(str)
+
+
+class CameraOpenThread(QThread):
+    """后台线程打开摄像头，不阻塞 UI"""
+    opened = pyqtSignal(object, int, int, int)  # camera, index, w, h
+    failed = pyqtSignal(str)
+
+    def __init__(self, camera, index, parent=None):
+        super().__init__(parent)
+        self._camera = camera
+        self._index = index
+
+    def run(self):
+        ok = self._camera.open(self._index, width=-1, height=-1, fps=-1)
+        if ok:
+            w, h = self._camera.get_resolution()
+            self.opened.emit(self._camera, self._index, w, h)
+        else:
+            self.failed.emit(f"摄像头 {self._index} 打开失败")
 
 
 class CameraPage(BasePage):
@@ -67,6 +86,8 @@ class CameraPage(BasePage):
         self._running = False
         self._model_loaded = False
         self._det_id_counter = 0
+        self._open_thread: CameraOpenThread = None
+        self._cameras_detected = False  # 是否已检测过摄像头列表
 
         # 界面
         self._setup_ui()
@@ -369,8 +390,8 @@ class CameraPage(BasePage):
             self._set_status("模型加载失败")
 
     def _refresh_cameras(self):
-        """手动刷新摄像头列表"""
-        self._detect_and_open()
+        """手动刷新摄像头列表并打开"""
+        self._refresh_and_open()
 
     def _on_camera_changed(self, index: int):
         """切换摄像头"""
@@ -380,56 +401,41 @@ class CameraPage(BasePage):
             self._open_camera(cam_idx)
 
     def _open_camera(self, index: int):
-        """打开指定摄像头"""
-        # 先停止推理
-        was_running = self._running
-        if was_running:
-            self._worker.pause()
-
-        # 关闭旧摄像头
+        """异步打开指定摄像头（不阻塞 UI）"""
+        # 先停止推理和关闭旧摄像头
+        self._stop_inference()
         self._camera.close()
+        if self._worker.isRunning():
+            self._worker.stop()
 
-        # 打开新摄像头（带后端自动回退），使用摄像头原生分辨率
-        ok = self._camera.open(index, width=-1, height=-1, fps=-1)
-        if not ok:
-            # 如果指定索引失败，尝试列表中的第一个可用摄像头
-            cams = BaseCamera.list_cameras(10)
-            if cams:
-                fallback = cams[0]
-                self._set_status(f"摄像头 {index} 打开失败，尝试 {fallback['name']}...")
-                ok = self._camera.open(fallback["index"], width=-1, height=-1, fps=-1)
-                if ok:
-                    index = fallback["index"]
-                    # 更新下拉框
-                    for i in range(self.cam_combo.count()):
-                        if self.cam_combo.itemData(i) == index:
-                            self.cam_combo.setCurrentIndex(i)
-                            break
+        # 显示加载状态
+        self._set_status(f"正在打开摄像头 {index}...")
+        self.camera_view.clear()
 
-        if not ok:
-            QMessageBox.warning(self, "打开失败", f"无法打开任何摄像头")
-            self.cam_combo.setCurrentIndex(0)
-            self._set_status("摄像头打开失败")
-            return
+        # 后台线程打开摄像头
+        self._open_thread = CameraOpenThread(self._camera, index)
+        self._open_thread.opened.connect(self._on_camera_opened)
+        self._open_thread.failed.connect(self._on_camera_open_failed)
+        self._open_thread.start()
 
-        # 更新分辨率显示
-        w, h = self._camera.get_resolution()
+    def _on_camera_opened(self, camera, index, w, h):
+        """摄像头打开成功"""
+        self._open_thread = None
         self.lbl_res.setText(f"{w}x{h}")
-
-        # 保存配置
         self.config.set("camera_index", index)
         self.config.save()
 
-        # 启动 worker 预览（持续发帧，不做推理）
         print(f"[CameraPage] 打开摄像头 {index} ({w}x{h})")
         self._set_status(f"摄像头 {index} 已连接 ({w}x{h})")
+
+        # 启动 worker 预览
         self._worker.start_preview()
 
-        # 恢复推理状态
-        if was_running:
-            self._worker.enable_inference()
-        else:
-            self._worker.disable_inference()
+    def _on_camera_open_failed(self, msg):
+        """摄像头打开失败"""
+        self._open_thread = None
+        self._set_status(msg)
+        QMessageBox.warning(self, "打开失败", msg)
 
     def _on_param_changed(self, value: float):
         """参数变化 -> 更新 worker"""
@@ -576,21 +582,33 @@ class CameraPage(BasePage):
 
     # ============ BasePage 生命周期 ============
     def on_show(self):
-        """页面显示：不重新检测，直接用已打开的摄像头"""
+        """页面显示：只打开摄像头，不刷新列表"""
+        if not self._camera.is_opened() and self._cameras_detected:
+            cam_idx = self.cam_combo.currentData()
+            if cam_idx is not None and cam_idx >= 0:
+                self._open_camera(cam_idx)
         self._set_status("就绪")
 
     def on_hide(self):
-        """页面隐藏：停止推理，但保留摄像头和 worker（快速恢复）"""
+        """页面隐藏：停止推理、关闭摄像头、停止 worker"""
         self._stop_inference()
+        if self._worker.isRunning():
+            self._worker.stop()
+        if self._open_thread and self._open_thread.isRunning():
+            self._open_thread.quit()
+            self._open_thread.wait(1000)
+        self._camera.close()
+        self.camera_view.clear()
+        self._set_status("摄像头已关闭")
 
     def _detect_and_open(self):
-        """检测摄像头并打开（启动时或手动刷新时调用）"""
+        """检测摄像头列表（不打开），填充下拉框"""
         self._set_status("正在检测摄像头...")
         self.cam_combo.blockSignals(True)
         self.cam_combo.clear()
 
         saved_idx = self.config.get("camera_index", 0)
-        cams = BaseCamera.list_cameras(10)  # 返回 [{"name":..., "index":...}, ...]
+        cams = BaseCamera.list_cameras(10)
         if not cams:
             self.cam_combo.addItem("未检测到摄像头", -1)
             self._set_status("未检测到可用摄像头，请检查连接")
@@ -609,9 +627,14 @@ class CameraPage(BasePage):
                 self.cam_combo.setCurrentIndex(i)
                 break
         self.cam_combo.blockSignals(False)
+        self._cameras_detected = True
 
-        # 打开摄像头 + 启动 worker
-        self._open_camera(target)
+    def _refresh_and_open(self):
+        """检测摄像头列表并打开（刷新按钮用）"""
+        self._detect_and_open()
+        cam_idx = self.cam_combo.currentData()
+        if cam_idx is not None and cam_idx >= 0:
+            self._open_camera(cam_idx)
 
     def save_state(self):
         """保存状态"""

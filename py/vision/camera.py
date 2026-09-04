@@ -70,33 +70,16 @@ class BaseCamera(ABC):
             for i in range(max_test):
                 cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
                 if cap.isOpened():
-                    ret, _ = cap.read()
+                    wmi_devices.append({"name": f"摄像头 {i}", "index": i})
                     cap.release()
-                    if ret:
-                        wmi_devices.append({"name": f"摄像头 {i}", "index": i})
             return wmi_devices
 
-        # WMI 有结果：用 OpenCV 快速匹配 index（只探测 WMI 数量个）
-        print(f"[BaseCamera] WMI 检测到 {len(wmi_devices)} 个摄像头，匹配 DirectShow index...")
-        matched = 0
-        for i in range(max_test):
-            if matched >= len(wmi_devices):
-                break
-            cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
-            if cap.isOpened():
-                ret, _ = cap.read()
-                if ret:
-                    # 用第一个未匹配的 WMI 设备名
-                    for dev in wmi_devices:
-                        if dev["index"] == -1:
-                            dev["index"] = i
-                            matched += 1
-                            break
-                cap.release()
-
-        # 返回已匹配的设备
-        result = [d for d in wmi_devices if d["index"] >= 0]
-        print(f"[BaseCamera] 匹配完成: {[(d['name'], d['index']) for d in result]}")
+        # WMI 有结果：按顺序分配 index（不读帧，快速返回）
+        print(f"[BaseCamera] WMI 检测到 {len(wmi_devices)} 个摄像头")
+        for idx, dev in enumerate(wmi_devices):
+            dev["index"] = idx
+        print(f"[BaseCamera] 设备列表: {[(d['name'], d['index']) for d in wmi_devices]}")
+        return wmi_devices
         return result
 
 

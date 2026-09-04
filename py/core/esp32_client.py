@@ -9,7 +9,7 @@ ESP32 通信层
 这一层不关心命令的含义，只负责"发出去"和"收回来"。
 修改通信协议或底层库时，只需要改这个文件。
 """
-from esp32_lib import ESP32
+from core.esp32_lib import ESP32
 
 # ============ 默认配置 ============
 DEFAULT_BROKER = "127.0.0.1"

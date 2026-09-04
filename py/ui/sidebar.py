@@ -5,11 +5,12 @@
 - 折叠宽 60px：仅图标
 - 点击切换页面，顶部有折叠/展开按钮
 """
+import os
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QSizePolicy
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPropertyAnimation, QEasingCurve
-from PyQt6.QtGui import QIcon, QFont
+from PyQt6.QtGui import QIcon, QFont, QPixmap
 
 try:
     import qtawesome as qta
@@ -35,7 +36,7 @@ class SidebarButton(QPushButton):
 
         # 图标
         self._icon_label = QLabel()
-        self._icon_label.setFixedSize(24, 24)
+        self._icon_label.setFixedSize(40, 40)
         self._icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._update_icon()
 
@@ -53,14 +54,21 @@ class SidebarButton(QPushButton):
         layout.addStretch()
 
     def _update_icon(self):
-        """更新图标"""
+        """更新图标（优先PNG文件，其次qtawesome，最后文字首字母）"""
+        # 尝试加载 PNG 文件
+        if os.path.isfile(self._icon_name):
+            pixmap = QPixmap(self._icon_name)
+            if not pixmap.isNull():
+                self._icon_label.setPixmap(pixmap.scaled(40, 40, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+                return
+        # 尝试 qtawesome
         if _HAS_QTA:
             icon = qta.icon(self._icon_name, color="#333333", scale_factor=1.2)
-            self._icon_label.setPixmap(icon.pixmap(24, 24))
+            self._icon_label.setPixmap(icon.pixmap(40, 40))
         else:
             # 回退：用文字首字母
             self._icon_label.setText(self._title[0])
-            self._icon_label.setFont(QFont("Microsoft YaHei", 12, QFont.Weight.Bold))
+            self._icon_label.setFont(QFont("Microsoft YaHei", 16, QFont.Weight.Bold))
             self._icon_label.setStyleSheet("color: #333333;")
 
     def set_expanded(self, expanded: bool):

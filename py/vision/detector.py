@@ -99,6 +99,7 @@ class Detector:
             classes=classes,
             max_det=max_det,
             verbose=False,
+            save=False,
             device=self._device
         )
 

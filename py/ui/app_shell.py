@@ -3,6 +3,7 @@
 ========
 左侧可折叠侧边栏 + 中央 QStackedWidget 页面容器。
 """
+import os
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QStackedWidget, QApplication
 )
@@ -14,6 +15,10 @@ from ui.pages.conveyor_page import ConveyorPage
 from ui.pages.camera_page import CameraPage
 from core.config import get_config
 
+# 图标路径
+_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_ICON_DIR = os.path.join(_BASE_DIR, "assets", "icons")
+
 
 class AppShell(QMainWindow):
     """主窗口壳：侧边栏 + 页面堆栈"""
@@ -21,8 +26,13 @@ class AppShell(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("ESP32 控制中心")
+        self.setWindowTitle("控制系统")
         self.resize(1200, 800)
+
+        # 设置窗口图标
+        icon_path = os.path.join(_ICON_DIR, "tubiao.png")
+        if os.path.isfile(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
 
         # 配置管理
         self.config = get_config()
@@ -55,11 +65,13 @@ class AppShell(QMainWindow):
         """注册所有页面"""
         # 传送带控制
         conveyor = ConveyorPage()
-        self._add_page("conveyor", conveyor, "传送带控制", "fa5s.conveyor-belt")
+        conveyor_icon = os.path.join(_ICON_DIR, "chuansongdai.png")
+        self._add_page("conveyor", conveyor, "传送带控制", conveyor_icon)
 
         # 相机识别
         camera = CameraPage()
-        self._add_page("camera", camera, "相机识别", "fa5s.camera")
+        camera_icon = os.path.join(_ICON_DIR, "xiaagnji.png")
+        self._add_page("camera", camera, "相机识别", camera_icon)
 
         # 默认显示第一页
         self.stack.setCurrentIndex(0)
