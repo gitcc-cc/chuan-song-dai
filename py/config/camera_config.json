@@ -6,5 +6,6 @@
   "window_geometry": "01d9d0cb0003000000000000fffffff9000005ff0000032f000000070000001a000004b60000032e000000000200000006000000000000000017000005ff0000032f",
   "sidebar_expanded": false,
   "last_model_dir": "E:/D+/yolo/EzYOLO-main/runs/train/exp_1/weights",
-  "inference_interval": 1
+  "inference_interval": 1,
+  "qr_interval": 1
 }

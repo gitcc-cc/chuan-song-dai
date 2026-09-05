@@ -1,8 +1,8 @@
 """
 推理工作线程
 ============
-QThread 循环：持续读取摄像头 -> 发射预览帧 -> 可选推理 -> 发射检测结果。
-支持跳帧推理（取模）和单次检测。
+QThread 循环：持续读取摄像头 -> 发射预览帧 -> 可选推理+解码 -> 发射检测结果。
+支持跳帧推理（取模）、单次检测、二维码/条形码解码。
 """
 import time
 from typing import List, Dict, Any, Optional
@@ -12,14 +12,16 @@ from PyQt6.QtCore import QThread, pyqtSignal, QMutex
 
 from vision.camera import BaseCamera
 from vision.detector import Detector
+from vision.qr_decoder import QRDecoder
 
 
 class InferenceWorker(QThread):
     """推理工作线程：持续预览，推理可开关，支持跳帧和单次检测"""
 
-    # 信号：原始帧、检测结果、FPS
+    # 信号
     frame_ready = pyqtSignal(np.ndarray)              # 原始 BGR 帧（预览用）
-    detections_ready = pyqtSignal(list)               # 检测结果列表
+    detections_ready = pyqtSignal(list)               # YOLO 检测结果
+    qr_results_ready = pyqtSignal(list)               # 二维码解码结果
     fps_updated = pyqtSignal(float)                   # 实时 FPS
     error_occurred = pyqtSignal(str)                  # 错误信息
 
@@ -28,6 +30,7 @@ class InferenceWorker(QThread):
 
         self._camera: Optional[BaseCamera] = None
         self._detector: Optional[Detector] = None
+        self._qr_decoder = QRDecoder()
 
         # 推理参数
         self._conf_threshold = 0.5
@@ -35,11 +38,13 @@ class InferenceWorker(QThread):
         self._classes = None
 
         # 运行控制
-        self._running = False          # 线程生命周期
-        self._inference_enabled = False  # 是否做推理（连续模式）
-        self._one_shot = False         # 单次检测标志
-        self._inference_interval = 1   # 推理间隔（帧取模），1=每帧都推理
-        self._frame_count = 0          # 帧计数器
+        self._running = False
+        self._inference_enabled = False
+        self._one_shot = False
+        self._qr_enabled = True        # 二维码解码开关
+        self._inference_interval = 1   # 推理间隔（帧取模）
+        self._qr_interval = 1          # 二维码解码间隔（帧取模）
+        self._frame_count = 0
         self._mutex = QMutex()
 
         # FPS 统计
@@ -65,6 +70,18 @@ class InferenceWorker(QThread):
         """设置推理间隔（帧取模），1=每帧推理，5=每5帧推理1次"""
         self._mutex.lock()
         self._inference_interval = max(1, interval)
+        self._mutex.unlock()
+
+    def set_qr_enabled(self, enabled: bool):
+        """设置二维码解码开关"""
+        self._mutex.lock()
+        self._qr_enabled = enabled
+        self._mutex.unlock()
+
+    def set_qr_interval(self, interval: int):
+        """设置二维码解码间隔（帧取模）"""
+        self._mutex.lock()
+        self._qr_interval = max(1, interval)
         self._mutex.unlock()
 
     # ============ 线程控制 ============
@@ -101,9 +118,8 @@ class InferenceWorker(QThread):
         self._mutex.lock()
         self._running = False
         self._mutex.unlock()
-        self.wait(3000)  # 最多等 3 秒
+        self.wait(3000)
 
-        # 确保摄像头关闭
         if self._camera:
             self._camera.close()
 
@@ -116,41 +132,41 @@ class InferenceWorker(QThread):
             self.error_occurred.emit("检测器未加载")
             return
 
-        # 预热
         self._detector.warmup()
         print("[InferenceWorker] 启动预览循环")
 
         while True:
-            # 检查运行标志
+            # 读取控制标志
             self._mutex.lock()
             running = self._running
             inference_enabled = self._inference_enabled
             one_shot = self._one_shot
-            interval = self._inference_interval
+            qr_enabled = self._qr_enabled
+            inf_interval = self._inference_interval
+            qr_interval = self._qr_interval
             if one_shot:
-                self._one_shot = False  # 取走标志
+                self._one_shot = False
             self._mutex.unlock()
 
             if not running:
                 break
 
-            # 1) 读取帧（摄像头全速，不停）
+            # 1) 读取帧
             ret, frame = self._camera.read()
             if not ret or frame is None:
                 time.sleep(0.01)
                 continue
 
-            # 2) 发射原始帧（预览，始终发）
+            self._frame_count += 1
+
+            # 2) 发射原始帧
             self.frame_ready.emit(frame.copy())
 
             # 3) 判断是否需要推理（连续模式 或 单次触发）
-            should_infer = False
-            if inference_enabled or one_shot:
-                self._frame_count += 1
-                if self._frame_count % interval == 0:
-                    should_infer = True
+            should_infer = (inference_enabled or one_shot) and (self._frame_count % inf_interval == 0)
 
-            # 4) 执行推理
+            # 4) 执行 YOLO 推理
+            detections = []
             if should_infer:
                 detections = self._detector.infer(
                     frame,
@@ -160,7 +176,12 @@ class InferenceWorker(QThread):
                 )
                 self.detections_ready.emit(detections)
 
-            # 5) 计算并发射 FPS
+                # 5) YOLO 触发时，同时执行 QR 解码（按 QR 间隔）
+                if qr_enabled and self._frame_count % qr_interval == 0:
+                    qr_results = self._qr_decoder.decode(frame)
+                    self.qr_results_ready.emit(qr_results)
+
+            # 6) FPS
             self._frame_times.append(time.perf_counter())
             cutoff = self._frame_times[-1] - 1.0
             self._frame_times = [t for t in self._frame_times if t > cutoff]

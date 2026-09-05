@@ -1,7 +1,7 @@
 """
 检测结果表格
-============
-QTableWidget 显示：ID、类别、置信度、坐标(x1,y1,x2,y2)
+===========
+QTableWidget 显示：ID、类别、置信度、坐标(x1,y1,x2,y2)、二维码内容
 支持：复制、自动滚动、最大行数限制
 """
 from typing import List, Dict, Any, Optional
@@ -16,8 +16,8 @@ from PyQt6.QtGui import QAction, QColor, QBrush
 class DetectionTable(QTableWidget):
     """检测结果表格"""
 
-    HEADERS = ["#", "类别", "置信度", "X1", "Y1", "X2", "Y2"]
-    MAX_ROWS = 100  # 最大保留行数
+    HEADERS = ["#", "类别", "置信度", "X1", "Y1", "X2", "Y2", "二维码"]
+    MAX_ROWS = 100
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -38,6 +38,7 @@ class DetectionTable(QTableWidget):
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)  # 置信度
         for i in range(3, 7):
             header.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)           # 二维码
 
         # 样式
         self.setStyleSheet("""
@@ -64,13 +65,13 @@ class DetectionTable(QTableWidget):
             }
         """)
 
-        # 右键菜单：复制
+        # 右键菜单
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
 
-    def add_detection(self, detection: Dict[str, Any], det_id: int):
+    def add_detection(self, detection: Dict[str, Any], det_id: int,
+                      qr_content: str = ""):
         """添加一行检测结果（插入到顶部）"""
-        # 插入行到第 0 行
         self.insertRow(0)
 
         bbox = detection.get("bbox", [0, 0, 0, 0])
@@ -85,23 +86,34 @@ class DetectionTable(QTableWidget):
             QTableWidgetItem(f"{int(bbox[1])}"),
             QTableWidgetItem(f"{int(bbox[2])}"),
             QTableWidgetItem(f"{int(bbox[3])}"),
+            QTableWidgetItem(qr_content),
         ]
 
         # 居中对齐
-        for item in items:
+        for idx, item in enumerate(items):
             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.setItem(0, items.index(item), item)
+            self.setItem(0, idx, item)
 
-        # 超过最大行数删除最后一行
+        # 有二维码内容时高亮显示
+        if qr_content:
+            qr_item = self.item(0, 7)
+            if qr_item:
+                qr_item.setBackground(QBrush(QColor(0x18, 0x6D, 0x3F)))
+                qr_item.setForeground(QBrush(QColor(255, 255, 255)))
+
         if self.rowCount() > self.MAX_ROWS:
             self.removeRow(self.MAX_ROWS)
 
-    def add_detections(self, detections: List[Dict[str, Any]], start_id: int = 1):
+    def add_detections(self, detections: List[Dict[str, Any]],
+                       qr_bindings: Dict[int, str] = None,
+                       start_id: int = 1):
         """批量添加（用于单帧多目标）"""
-        # 按置信度降序排序
+        if qr_bindings is None:
+            qr_bindings = {}
         sorted_dets = sorted(detections, key=lambda d: d.get("conf", 0), reverse=True)
         for i, det in enumerate(sorted_dets):
-            self.add_detection(det, start_id + i)
+            qr_content = qr_bindings.get(i, "")
+            self.add_detection(det, start_id + i, qr_content)
 
     def clear_all(self):
         """清空表格"""

@@ -1,101 +1,93 @@
-# AGENTS.md — 6.30传送带 (ESP32 Conveyor Belt Control)
+# AGENTS.md — 6.30传送带 (ESP32 传送带控制)
 
-## 项目概览
-双仓库结构：
-- **11/** — PlatformIO 固件 (ESP32-S3, Arduino 框架)
-- **py/** — Python PyQt5 上位机 GUI (ESP32 控制中心)
+## 结构
+一个工作区，两个仓库：
+- **11/** — PlatformIO 固件 (ESP32-S3, Arduino)
+- **py/** — Python PyQt6 上位机 GUI (ESP32 控制中心)
 
----
+## 11/ — 固件
 
-## 11/ — ESP32 固件 (PlatformIO)
-
-### 关键命令
+### 编译与烧录
 ```bash
 cd 11
-pio run                    # 编译 (默认环境 esp32s3-usb)
-pio run -e esp32s3-ota     # 编译 OTA 环境
-pio run -e esp32s3-usb     # 编译 USB 环境
-pio device monitor         # 串口监视器 (115200 baud)
-pio run -t upload          # 烧录 (USB)
-pio run -e esp32s3-ota -t upload  # OTA 烧录 (需配置 IP)
+pio run                          # 编译 (默认环境 esp32s3-usb)
+pio run -t upload                # USB 烧录
+pio run -e esp32s3-ota -t upload # OTA 烧录 (需先改 IP)
+pio device monitor               # 串口监视器 (115200 baud)
 ```
 
-### 环境配置 (platformio.ini)
-- **esp32s3-usb** (默认): USB 串口烧录, `upload_protocol = esptool`
-- **esp32s3-ota**: OTA 无线烧录, `upload_port = 10.47.240.122`, `upload_flags = --auth=1234`
+### USB 口注意事项
+板子有**两个 USB 口**：OTG（原生 USB-C, CDC）和 TTL（UART0, GPIO43/44, CH340/CP2102）。`platformio.ini` **没有** `board_build.arduino.usb_mode` 配置——`Serial` 输出走 **TTL 口**。如果加回这两行，`Serial` 会切到 OTG 口。`pio run -t upload` 始终用 OTG 口烧录。
 
-### 硬件接线 (main.cpp)
+### OTA
+- 主机名：`ESP32-S3`，密码：`1234`
+- **烧录前必须把 `platformio.ini` 的 `upload_port` 改成 ESP32 当前 IP**
+- `otaBegin()` 必须在 WiFi 连上之后调用；`otaLoop()` 在每次 `loop()` 中执行（受 `wifiReady` 控制）
+
+### WiFi 重连状态机 (main.cpp:204-230)
+- `wifi_flag`：0=空闲, 1=计时中, 2=已调用 WiFi.begin()
+- 断开时：`wifiReady=false`, `netInitDone=false`, flag→1, 记录时间戳
+- 5秒后：若 flag 仍为 1 → 调用 `WiFi.begin()` 一次，flag→2
+- 连上后：`!netInitDone && mqttWiFiConnected()` 块执行 → `mqttConnectBroker()` + `otaBegin()`，flag 重置为 0
+- **关键缺陷**：5秒重连失败后 `wifi_flag` 停在 2，永远不再重试——每个上电周期只有一次重连机会。如果后续要加重试逻辑，从这里改。
+
+### MQTT (myMqtt.h)
+- WiFi SSID：`14`，密码：`111111111`
+- Broker：`10.156.130.56:1883`
+- 主题：`ht/cmd/1`（命令），`ht/status/1`（状态）
+- `mqttConnectBroker()` 阻塞最多 2 秒，开机只调用一次。Broker 断开后**不会自动重连**。
+- 支持命令：`status`、`dj 0-3`、`speed 0-13`、`mode local/remote`、`en 0/1`、`hello`
+- 舵机寄存器 46：0=停，1-13=反转，128-141=正转
+
+### 引脚对应
 | 引脚 | 功能 |
 |------|------|
-| 4 | 按钮 (内部上拉, 按下=LOW) |
+| 4 | 按钮（内部上拉，按下=LOW） |
 | 7 | 电位器 ADC |
-| 18 | 传送带电机 A |
-| 15 | 传送带电机 B |
-| 5 | 光纤传感器 (NPN: LOW=检测到物体) |
-| 16/17 | 舵机串口 RX/TX (Serial2, 1Mbps) |
-| 48 | 板载 RGB LED (NeoPixel) |
+| 18/15 | 电机 A/B（A=1,B=0=正转；A=1,B=1=反转） |
+| 5 | 光纤传感器（NPN：LOW=检测到物体） |
+| 16/17 | 舵机串口 RX/TX（1Mbps） |
+| 48 | 板载 NeoPixel RGB LED |
 
-### 通信协议 (MQTT)
-- **Broker**: 本地局域网 (默认 127.0.0.1:1883)
-- **命令主题**: `ht/cmd/1`
-- **状态主题**: `ht/status/1`
+### 状态机
+- 状态：0=停止, 1=正转, 2=反转, 3=自动
+- `state 3` 自动模式：传感器 LOW 持续 0.5 秒 → 停止；HIGH → 正转
+- 速度模式：0=就地（电位器），1=远程（MQTT `speed` 命令）
 
-### 支持命令
-| 命令 | 说明 |
-|------|------|
-| `status` | 查询状态 (返回 JSON) |
-| `dj 0/1/2/3` | 状态切换: 停止/正转/反转/自动 |
-| `speed 0-13` | 远程调速 (仅远程模式生效) |
-| `mode local/remote` | 切换就地/远程模式 |
-| `en 0/1` | 解抱闸/上抱闸 |
-| `hello` | 测试通信 |
+### 无测试 / 无 Lint / 无 CI
+质量完全靠手动验证。没有测试框架、没有 linter、没有 CI。
 
-### 状态 JSON 格式
-```json
-{"state":0-3,"speed":0-13,"pot":0-100,"sensor":0/1,"mode":0/1}
-```
-
----
-
-## py/ — Python 上位机 (PyQt5)
-
-### 依赖
-```bash
-pip install PyQt5 paho-mqtt
-```
+## py/ — Python 上位机
 
 ### 运行
 ```bash
-cd py
-python main.py
+cd py && python main.py
 ```
 
-### 架构分层
-```
-main.py           → 入口
-ui/main_window.py → 界面层 (Qt, 只负责显示/交互)
-core/controller.py→ 业务层 (状态映射, 校验, 命令生成)
-core/esp32_client.py → 通信层 (连接/发送/接收封装)
-esp32_lib.py      → 底层 MQTT (paho-mqtt, 线程安全)
-styles.py         → QSS 样式
+### 依赖（没有 requirements.txt）
+```bash
+pip install PyQt6 paho-mqtt
+# 视觉页面额外依赖：
+pip install ultralytics opencv-python numpy wmi qtawesome
 ```
 
-### 关键设计
-- **三层分离**: 界面不含业务逻辑, 业务不含通信细节
-- **线程安全**: 网络操作在后台线程, 通过 `WorkerSignals` (Qt 信号) 回主线程更新 UI
-- **状态轮询**: `POLL_INTERVAL = 2000ms` 定时查询 ESP32 状态
-- **防抖设计**: 滑块联动时 `slider_updating` 标志防止循环发送
+### 核心架构
+- `core/esp32_lib.py` — MQTT 封装（`paho-mqtt`，线程安全）。**Broker 默认 `127.0.0.1`**——必须和 ESP32 一致。
+- `core/controller.py` — 业务逻辑（状态映射、校验、命令生成）
+- `ui/pages/base_page.py` — `BasePage` 生命周期：`on_show()` / `on_hide()` / `save_state()`
+- `ui/app_shell.py` — 主窗口壳（侧边栏 + QStackedWidget 页面栈）
+- `vision/worker.py` — QThread 推理循环，支持跳帧
 
-### 默认连接配置
-- Broker: `127.0.0.1`
-- Port: `1883`
+### 注意：用的是 PyQt6（不是 PyQt5）
+所有 import 都是 `PyQt6`，不要降级。
 
----
+## 跨仓库关键问题
 
-## 常见问题/注意事项
+### MQTT Broker IP 不匹配（最严重）
+- ESP32 固件：硬编码 `10.156.130.56`（myMqtt.h:14）
+- Python GUI：默认 `127.0.0.1`（esp32_lib.py:9）
+- **必须一致，否则命令到不了 ESP32。** 用户需手动配置上位机的 Broker 地址。
 
-1. **固件烧录前**需确认 `platformio.ini` 中 OTA IP (`upload_port`) 是否为当前 ESP32 实际 IP
-2. **Python 连接失败**通常是 Broker IP/端口错误, 或 ESP32 未连上 WiFi
-3. **串口监视器**可查看 WiFi 连接过程、MQTT 连接状态、OTA 进度
-4. **自动模式**下传感器逻辑: LOW=检测到物体→停, HIGH=无物体→转 (main.cpp:246-269)
-5. **速度范围**: 0-13 (舵机寄存器 46: 0=停, 1-13=反转, 128-141=正转)
+### WiFi 密码硬编码
+- ESP32：`myMqtt.h:12-13`（`"14"` / `"111111111"`）
+- Python：运行时通过 `ESP32(broker, port)` 构造函数传入

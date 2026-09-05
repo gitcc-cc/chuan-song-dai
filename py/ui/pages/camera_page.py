@@ -160,6 +160,12 @@ class CameraPage(BasePage):
         self.slider_interval.value_changed.connect(self._on_interval_changed)
         param_layout.addWidget(self.slider_interval)
 
+        self.slider_qr_interval = ParamSlider("扫码间隔（帧）", 1, 30,
+                                              default=1, step=1, decimals=0)
+        self.slider_qr_interval.setToolTip("跟随检测触发，1=每次检测都扫码")
+        self.slider_qr_interval.value_changed.connect(self._on_qr_interval_changed)
+        param_layout.addWidget(self.slider_qr_interval)
+
         left_layout.addWidget(param_group)
 
         # --- 未来扩展：类别→指令配置 ---
@@ -282,6 +288,36 @@ class CameraPage(BasePage):
         self.btn_coords.toggled.connect(self._on_coords_toggled)
         toolbar.addWidget(self.btn_coords)
 
+        # 扫码开关按钮
+        self.btn_qr = QPushButton()
+        self.btn_qr.setCheckable(True)
+        self.btn_qr.setChecked(True)  # 默认开启
+        self.btn_qr.setFixedSize(40, 40)
+        self.btn_qr.setToolTip("启用/禁用二维码扫描")
+        self.btn_qr.setStyleSheet("""
+            QPushButton {
+                background-color: #f0f0f0;
+                border: none;
+                border-radius: 6px;
+                font-size: 10px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #e0e0e0; }
+            QPushButton:checked {
+                background-color: #07C160;
+                border: 2px solid #059648;
+                color: white;
+            }
+            QPushButton:checked:hover { background-color: #06AD56; }
+        """)
+        if _HAS_QTA:
+            self.btn_qr.setIcon(qta.icon("fa5s-qrcode", color="#333", scale_factor=1.2))
+            self.btn_qr.setIconSize(self.btn_qr.size() * 0.6)
+        else:
+            self.btn_qr.setText("QR")
+        self.btn_qr.toggled.connect(self._on_qr_toggled)
+        toolbar.addWidget(self.btn_qr)
+
         toolbar.addStretch()
 
         # FPS 显示
@@ -339,6 +375,7 @@ class CameraPage(BasePage):
         """连接 worker 信号"""
         self._worker.frame_ready.connect(self.camera_view.update_frame)
         self._worker.detections_ready.connect(self._on_detections_ready)
+        self._worker.qr_results_ready.connect(self._on_qr_results)
         self._worker.fps_updated.connect(self._on_fps_updated)
         self._worker.error_occurred.connect(self._on_worker_error)
 
@@ -354,6 +391,9 @@ class CameraPage(BasePage):
         self.slider_iou.set_value(self.config.get("iou_threshold", 0.45), emit=False)
         self.slider_interval.set_value(self.config.get("inference_interval", 1), emit=False)
         self._worker.set_inference_interval(int(self.slider_interval.get_value()))
+
+        self.slider_qr_interval.set_value(self.config.get("qr_interval", 1), emit=False)
+        self._worker.set_qr_interval(int(self.slider_qr_interval.get_value()))
 
         # 启动时检测摄像头并打开
         self._detect_and_open()
@@ -395,7 +435,9 @@ class CameraPage(BasePage):
 
     def _on_camera_changed(self, index: int):
         """切换摄像头"""
+        text = self.cam_combo.currentText()
         cam_idx = self.cam_combo.itemData(index)
+        print(f"[CameraPage] 下拉框选中: text='{text}', itemData={cam_idx}, comboIndex={index}")
         if cam_idx is not None and cam_idx >= 0:
             self._set_status(f"正在切换到摄像头 {cam_idx}...")
             self._open_camera(cam_idx)
@@ -453,6 +495,13 @@ class CameraPage(BasePage):
         interval = int(value)
         self._worker.set_inference_interval(interval)
         self.config.set("inference_interval", interval)
+        self.config.save()
+
+    def _on_qr_interval_changed(self, value: float):
+        """扫码间隔变化"""
+        interval = int(value)
+        self._worker.set_qr_interval(interval)
+        self.config.set("qr_interval", interval)
         self.config.save()
 
     def _on_camera_toggled(self, checked: bool):
@@ -514,6 +563,16 @@ class CameraPage(BasePage):
             self.btn_coords.setIcon(qta.icon("fa5s.crosshairs", color=color, scale_factor=1.2))
             self.btn_coords.setIconSize(self.btn_coords.size() * 0.6)
 
+    def _on_qr_toggled(self, checked: bool):
+        """扫码开关切换"""
+        self._worker.set_qr_enabled(checked)
+        if _HAS_QTA:
+            color = "#ffffff" if checked else "#333333"
+            self.btn_qr.setIcon(qta.icon("fa5s-qrcode", color=color, scale_factor=1.2))
+            self.btn_qr.setIconSize(self.btn_qr.size() * 0.6)
+        status = "扫码已启用" if checked else "扫码已禁用"
+        self._set_status(status)
+
     def _on_snapshot(self):
         """保存当前帧为图片"""
         if not self._camera.is_opened():
@@ -551,13 +610,19 @@ class CameraPage(BasePage):
 
     @pyqtSlot(list)
     def _on_detections_ready(self, detections: List[Dict[str, Any]]):
-        """收到检测结果"""
+        """收到 YOLO 检测结果"""
         self.camera_view.update_detections(detections)
 
-        # 更新表格
+        # 更新表格（带二维码绑定）
         if detections:
             self._det_id_counter += 1
-            self.detection_table.add_detections(detections, self._det_id_counter)
+            qr_bindings = self.camera_view._qr_bindings
+            self.detection_table.add_detections(detections, qr_bindings, self._det_id_counter)
+
+    @pyqtSlot(list)
+    def _on_qr_results(self, qr_results: List[Dict[str, Any]]):
+        """收到二维码解码结果"""
+        self.camera_view.update_qr_results(qr_results)
 
     @pyqtSlot(float)
     def _on_fps_updated(self, fps: float):
@@ -585,6 +650,8 @@ class CameraPage(BasePage):
         """页面显示：只打开摄像头，不刷新列表"""
         if not self._camera.is_opened() and self._cameras_detected:
             cam_idx = self.cam_combo.currentData()
+            cam_name = self.cam_combo.currentText()
+            print(f"[CameraPage] on_show: 选中 '{cam_name}', index={cam_idx}")
             if cam_idx is not None and cam_idx >= 0:
                 self._open_camera(cam_idx)
         self._set_status("就绪")
@@ -641,4 +708,5 @@ class CameraPage(BasePage):
         self.config.set("conf_threshold", self.slider_conf.get_value())
         self.config.set("iou_threshold", self.slider_iou.get_value())
         self.config.set("inference_interval", int(self.slider_interval.get_value()))
+        self.config.set("qr_interval", int(self.slider_qr_interval.get_value()))
         self.config.save()

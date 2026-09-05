@@ -2,7 +2,7 @@
 摄像头抽象层
 ===========
 基于 OpenCV VideoCapture，统一接口，便于后续扩展深度相机。
-使用 WMI 快速枚举系统摄像头设备（毫秒级，不依赖 OpenCV 超时）。
+使用 pyusbcameraindex 快速枚举 DirectShow 设备（毫秒级，正确返回设备名+index）。
 """
 from abc import ABC, abstractmethod
 from typing import Tuple, Optional, List, Dict
@@ -46,40 +46,60 @@ class BaseCamera(ABC):
     @staticmethod
     def list_cameras(max_test: int = 10) -> List[Dict]:
         """
-        用 WMI 快速枚举系统摄像头设备（毫秒级返回）。
+        枚举系统摄像头设备。
+        优先用 pyusbcameraindex（DirectShow API，毫秒级，正确返回设备名+index）。
+        回退到 WMI + OpenCV 探测。
         返回: [{"name": "设备名", "index": OpenCV索引}, ...]
         """
-        # 先用 WMI 读设备列表（快）
+        # 方案 1：pyusbcameraindex（最快、最准确）
+        try:
+            from pyusbcameraindex import enumerate_usb_video_devices_windows
+            devices = enumerate_usb_video_devices_windows()
+            if devices:
+                result = [{"name": d.name, "index": d.index} for d in devices]
+                print(f"[BaseCamera] pyusbcameraindex 检测到 {len(result)} 个摄像头: {[(d['name'], d['index']) for d in result]}")
+                return result
+        except ImportError:
+            print("[BaseCamera] pyusbcameraindex 未安装，回退 WMI...")
+        except Exception as e:
+            print(f"[BaseCamera] pyusbcameraindex 失败: {e}，回退 WMI...")
+
+        # 方案 2：WMI + OpenCV 探测（回退）
         wmi_devices = []
         try:
             import wmi as wmi_mod
             c = wmi_mod.WMI()
-            # 摄像头 ClassGuid
             CAMERA_GUID = "{ca3e7ab9-b4c3-4ae6-8251-579ef933890f}"
             for d in c.Win32_PnPEntity():
                 if getattr(d, 'ClassGuid', '') == CAMERA_GUID:
                     name = getattr(d, 'Name', f'Camera_{len(wmi_devices)}')
-                    pnp_id = getattr(d, 'PNPDeviceID', '')
-                    wmi_devices.append({"name": name, "pnp_id": pnp_id, "index": -1})
+                    wmi_devices.append({"name": name, "index": -1})
         except Exception as e:
-            print(f"[BaseCamera] WMI 读取失败: {e}，回退 OpenCV 探测")
+            print(f"[BaseCamera] WMI 读取失败: {e}")
 
-        if not wmi_devices:
-            # WMI 无结果，回退到 OpenCV 逐个探测（慢）
-            print("[BaseCamera] WMI 未检测到摄像头，回退 OpenCV 探测...")
-            for i in range(max_test):
-                cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
-                if cap.isOpened():
-                    wmi_devices.append({"name": f"摄像头 {i}", "index": i})
-                    cap.release()
-            return wmi_devices
+        if wmi_devices:
+            print(f"[BaseCamera] WMI 检测到 {len(wmi_devices)} 个摄像头: {[d['name'] for d in wmi_devices]}")
 
-        # WMI 有结果：按顺序分配 index（不读帧，快速返回）
-        print(f"[BaseCamera] WMI 检测到 {len(wmi_devices)} 个摄像头")
-        for idx, dev in enumerate(wmi_devices):
-            dev["index"] = idx
-        print(f"[BaseCamera] 设备列表: {[(d['name'], d['index']) for d in wmi_devices]}")
-        return wmi_devices
+        # OpenCV 探测可用 index
+        available = []
+        for i in range(max_test):
+            cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
+            if cap.isOpened():
+                ret, _ = cap.read()
+                cap.release()
+                if ret:
+                    available.append(i)
+        print(f"[BaseCamera] OpenCV 可用 index: {available}")
+
+        if not available:
+            return []
+
+        # 按顺序分配 WMI 名称
+        result = []
+        for idx, i in enumerate(available):
+            name = wmi_devices[idx]["name"] if idx < len(wmi_devices) else f"摄像头 {i}"
+            result.append({"name": name, "index": i})
+        print(f"[BaseCamera] 设备列表: {[(d['name'], d['index']) for d in result]}")
         return result
 
 
