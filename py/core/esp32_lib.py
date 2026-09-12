@@ -11,8 +11,11 @@ class ESP32:
         self.port = port
         self.topic_cmd = 'ht/cmd/1'
         self.topic_sta = 'ht/status/1'
+        self.topic_cmd2 = 'ht/cmd/2'
+        self.topic_sta2 = 'ht/status/2'
         self._last_status = None
         self._lock = threading.Lock()
+        self._prod_cmd_callback = None  # 产线指令回调
 
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         self.client.on_connect = self._on_connect
@@ -24,15 +27,21 @@ class ESP32:
     def connect(self, timeout=5):
         try:
             self.client.loop_stop()
+            self._event.clear()
+            self.connected = False
             self.client.reconnect_delay_set(0, 1)
+            print(f"[MQTT] 正在连接 {self.broker}:{self.port} ...")
             self.client.connect(self.broker, self.port, 60)
             self.client.loop_start()
             result = self._event.wait(timeout=timeout)
-            if not result and not self.connected:
+            if result:
+                print(f"[MQTT] 连接成功: {self.broker}:{self.port}")
+            else:
+                print(f"[MQTT] 连接超时 ({timeout}s): {self.broker}:{self.port}")
                 self.client.loop_stop()
             return result
         except Exception as e:
-            print(f'连接失败: {e}')
+            print(f"[MQTT] 连接异常: {e}")
             return False
 
     def _on_connect(self, client, userdata, flags, reason_code, properties):
@@ -40,6 +49,7 @@ class ESP32:
             self.connected = True
             self._event.set()
             client.subscribe(self.topic_sta)
+            client.subscribe(self.topic_cmd2)
 
     def _on_disconnect(self, client, userdata, disconnect_flags, reason_code, properties):
         self.connected = False
@@ -51,6 +61,13 @@ class ESP32:
                     self._last_status = json.loads(msg.payload.decode())
             except:
                 pass
+        elif msg.topic == self.topic_cmd2:
+            payload = msg.payload.decode().strip()
+            if self._prod_cmd_callback:
+                try:
+                    self._prod_cmd_callback(payload)
+                except Exception as e:
+                    print(f"[MQTT] 产线指令处理错误: {e}")
 
     def disconnect(self):
         self.connected = False
@@ -87,6 +104,20 @@ class ESP32:
 
     def is_connected(self):
         return self.connected and self.client.is_connected()
+
+    def set_prod_cmd_callback(self, callback):
+        """设置产线指令回调：callback(payload_str)"""
+        self._prod_cmd_callback = callback
+
+    def send_prod_result(self, slot_id: int, detections: list):
+        """发送产线检测结果到 ht/status/2"""
+        if not self.connected:
+            return
+        payload = json.dumps({
+            "slot_id": slot_id,
+            "detections": detections
+        }, ensure_ascii=False)
+        self.client.publish(self.topic_sta2, payload)
 
     # 快捷方法
     def forward(self): return self.send('dj 1')

@@ -73,13 +73,18 @@ class ConfigManager:
         return self._config.copy()
 
 
-# 全局单例
-_config_instance: ConfigManager | None = None
+# 全局单例（按文件名隔离）
+_config_instances: dict = {}
 
 
 def get_config(config_dir: str = "./config", filename: str = "camera_config.json") -> ConfigManager:
-    """获取全局配置实例（单例模式）"""
-    global _config_instance
-    if _config_instance is None:
-        _config_instance = ConfigManager(config_dir, filename)
-    return _config_instance
+    """获取全局配置实例（单例模式，按文件名隔离）"""
+    key = f"{config_dir}/{filename}"
+    if key not in _config_instances:
+        _config_instances[key] = ConfigManager(config_dir, filename)
+    return _config_instances[key]
+
+
+def get_production_config(config_dir: str = "./config") -> ConfigManager:
+    """获取产线控制配置实例"""
+    return get_config(config_dir, "production_config.json")

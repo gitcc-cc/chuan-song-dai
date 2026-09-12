@@ -24,12 +24,13 @@ except ImportError:
 class Detector:
     """YOLO 检测器"""
 
-    def __init__(self, model_path: str = "", device: str = ""):
+    def __init__(self, model_path: str = "", device: str = "", external_model=None):
         """
         参数:
             model_path: .pt 模型文件路径
             device: 推理设备，空字符串=自动选择
                    "cpu" / "cuda:0" / "cuda:1" / "mps" 等
+            external_model: 外部传入的 YOLO 模型实例（共享模式），传入后跳过加载
         """
         if not _HAS_ULTRALYTICS:
             raise RuntimeError("未安装 ultralytics: pip install ultralytics")
@@ -39,7 +40,10 @@ class Detector:
         self.names = {}
         self._device = device or self._auto_device()
 
-        if model_path:
+        if external_model is not None:
+            self.model = external_model
+            self.names = external_model.names if hasattr(external_model, 'names') else {}
+        elif model_path:
             self.load(model_path)
 
     def _auto_device(self) -> str:
@@ -57,6 +61,11 @@ class Detector:
         self._device = value
         if self.model is not None:
             self.model.to(value)
+
+    def set_model(self, model, names: dict = None):
+        """设置外部模型实例（共享模式）"""
+        self.model = model
+        self.names = names if names is not None else (model.names if hasattr(model, 'names') else {})
 
     def load(self, model_path: str) -> bool:
         """

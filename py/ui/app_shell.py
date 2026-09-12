@@ -13,6 +13,7 @@ from PyQt6.QtGui import QIcon
 from ui.sidebar import Sidebar
 from ui.pages.conveyor_page import ConveyorPage
 from ui.pages.camera_page import CameraPage
+from ui.pages.production_page import ProductionPage
 from core.config import get_config
 
 # 图标路径
@@ -73,6 +74,10 @@ class AppShell(QMainWindow):
         camera_icon = os.path.join(_ICON_DIR, "xiaagnji.png")
         self._add_page("camera", camera, "相机识别", camera_icon)
 
+        # 产线控制
+        production = ProductionPage()
+        self._add_page("production", production, "产线控制", "fa5s.industry")
+
         # 默认显示第一页
         self.stack.setCurrentIndex(0)
         self.sidebar.set_current("conveyor")
@@ -132,5 +137,10 @@ class AppShell(QMainWindow):
         # 停止当前页
         if hasattr(current, "on_hide"):
             current.on_hide()
+
+        # 清理产线页面资源
+        for page in self._pages.values():
+            if hasattr(page, "cleanup"):
+                page.cleanup()
 
         super().closeEvent(event)

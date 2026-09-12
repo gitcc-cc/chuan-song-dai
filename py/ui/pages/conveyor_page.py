@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
 from PyQt6.QtGui import QFont, QColor, QPalette
 
-from core.esp32_client import ESP32Client
+from core.esp32_client import get_shared_esp32, connect_shared, disconnect_shared
 from core.controller import Controller
 from ui.pages.base_page import BasePage
 from styles import STYLE
@@ -39,7 +39,7 @@ class ConveyorPage(BasePage):
         super().__init__(parent)
 
         # 通信层 & 逻辑层
-        self.client = ESP32Client()
+        self.client = get_shared_esp32()
         self.controller = Controller()
         self.signals = WorkerSignals()
 
@@ -366,7 +366,7 @@ class ConveyorPage(BasePage):
     # ============ 连接逻辑 ============
     def _on_connect_clicked(self):
         if self.client.is_connected():
-            self.client.disconnect()
+            disconnect_shared()
             self._update_connection_ui(False)
             self.signals.log_message.emit("手动断开连接")
             return
@@ -383,9 +383,9 @@ class ConveyorPage(BasePage):
         def do_connect():
             try:
                 self.signals.log_message.emit(f"正在连接 {broker}:{port_str} ...")
-                result = self.client.connect(
+                result = connect_shared(
                     broker=broker,
-                    port=int(port_str) if port_str else None
+                    port=int(port_str) if port_str else 1883
                 )
                 if result:
                     self.signals.connected.emit()
@@ -547,7 +547,7 @@ class ConveyorPage(BasePage):
     def _send_command(self, cmd):
         def do_send():
             self.signals.log_message.emit(f"→ {cmd}")
-            response = self.client.send_cmd(cmd)
+            response = self.client.send(cmd)
             if response is None:
                 if not self.client.is_connected():
                     self.signals.disconnected.emit()
@@ -584,14 +584,12 @@ class ConveyorPage(BasePage):
         self.clock_timer.start(1000)
 
     def on_hide(self):
-        """页面隐藏：停止轮询、断开连接"""
+        """页面隐藏：停止轮询（不断开连接，连接全局共用）"""
         self.clock_timer.stop()
         if hasattr(self, 'poll_timer'):
             self.poll_timer.stop()
             self.poll_timer.deleteLater()
             del self.poll_timer
-        if self.client.is_connected():
-            self.client.disconnect()
 
     def save_state(self):
         """保存状态"""

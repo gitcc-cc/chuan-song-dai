@@ -675,7 +675,9 @@ class CameraPage(BasePage):
         self.cam_combo.clear()
 
         saved_idx = self.config.get("camera_index", 0)
-        cams = BaseCamera.list_cameras(10)
+        # 使用共享摄像头列表，避免重复检测
+        from ui.pages.production_page import get_shared_cameras
+        cams = get_shared_cameras()
         if not cams:
             self.cam_combo.addItem("未检测到摄像头", -1)
             self._set_status("未检测到可用摄像头，请检查连接")
@@ -698,6 +700,8 @@ class CameraPage(BasePage):
 
     def _refresh_and_open(self):
         """检测摄像头列表并打开（刷新按钮用）"""
+        from ui.pages.production_page import reset_shared_cameras
+        reset_shared_cameras()
         self._detect_and_open()
         cam_idx = self.cam_combo.currentData()
         if cam_idx is not None and cam_idx >= 0:

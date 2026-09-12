@@ -1,0 +1,32 @@
+{
+  "model_path": "E:/D+/yolo/EzYOLO-main/runs/train/exp_1/weights/best.pt",
+  "camera_index": 0,
+  "conf_threshold": 0.5,
+  "iou_threshold": 0.45,
+  "window_geometry": null,
+  "sidebar_expanded": true,
+  "slot_1": {
+    "camera_index": 0,
+    "conf": 0.94,
+    "iou": 0.45,
+    "inference_interval": 1,
+    "qr_interval": 1
+  },
+  "slot_2": {
+    "camera_index": 2,
+    "conf": 0.5,
+    "iou": 0.45,
+    "inference_interval": 1,
+    "qr_interval": 1
+  },
+  "slot_3": {
+    "camera_index": 1,
+    "conf": 0.92,
+    "iou": 0.45,
+    "inference_interval": 1,
+    "qr_interval": 1
+  },
+  "slot_2_conf": 0.42,
+  "slot_3_conf": 0.45,
+  "slot_1_conf": 0.5
+}
