@@ -64,22 +64,59 @@ pio device monitor               # 串口监视器 (115200 baud)
 cd py && python main.py
 ```
 
-### 依赖（没有 requirements.txt）
+### 依赖
 ```bash
-pip install PyQt6 paho-mqtt
-# 视觉页面额外依赖：
-pip install ultralytics opencv-python numpy wmi qtawesome
+pip install -r requirements.txt
+# 额外 Windows 依赖：
+pip install wmi
 ```
 
 ### 核心架构
-- `core/esp32_lib.py` — MQTT 封装（`paho-mqtt`，线程安全）。**Broker 默认 `127.0.0.1`**——必须和 ESP32 一致。
-- `core/controller.py` — 业务逻辑（状态映射、校验、命令生成）
-- `ui/pages/base_page.py` — `BasePage` 生命周期：`on_show()` / `on_hide()` / `save_state()`
-- `ui/app_shell.py` — 主窗口壳（侧边栏 + QStackedWidget 页面栈）
-- `vision/worker.py` — QThread 推理循环，支持跳帧
+一个工作区，三个页面：
+- **传送带控制** (`conveyor_page.py`) — MQTT 连接入口 + 电机控制
+- **相机识别** (`camera_page.py`) — 单摄像头 YOLO + 二维码
+- **产线控制** (`production_page.py`) — 3路摄像头共享模型 + MQTT 指令控制
+
+模块间连接方式：
+- **信号槽** — QThread→GUI、Manager→GUI、MQTT→GUI 都用 Qt 信号
+- **全局单例** — MQTT 连接 (`get_shared_esp32()`)、配置 (`get_config()`)、生产配置 (`get_production_config()`)
+- **回调函数** — MQTT 消息回调 (`set_prod_cmd_callback`)
+- **页面独立** — 页面之间不互相引用，通过 `AppShell` 的 `QStackedWidget` 切换
 
 ### 注意：用的是 PyQt6（不是 PyQt5）
-所有 import 都是 `PyQt6`，不要降级。
+所有 import 都是 `PyQt6`，不要降级。枚举写法：`Qt.AlignmentFlag.AlignCenter`，`QFrame.Shape.VLine`。
+
+### MQTT 连接（全局唯一）
+- `core/esp32_client.py` 提供 `get_shared_esp32()` / `connect_shared()` / `disconnect_shared()`
+- 全局只有一个 ESP32 实例，所有页面共用
+- **传送带页面 `on_hide` 不能断开连接**，连接是全局的
+- `ESP32.connect()` 每次连接前必须 `_event.clear()` + `self.connected = False`，否则状态不准
+
+### MQTT 主题
+| 主题 | 方向 | 用途 |
+|------|------|------|
+| `ht/cmd/1` | GUI→ESP32 | 传送带控制命令 |
+| `ht/status/1` | ESP32→GUI | 传送带状态 |
+| `ht/cmd/2` | ESP32→GUI | 产线控制指令 |
+| `ht/status/2` | GUI→ESP32 | 产线检测结果 |
+
+### 产线控制指令格式
+发送到 `ht/cmd/2`：`<槽位> <检测> <扫码>`
+- 槽位：`xj1` / `xj2` / `xj3` / `all`
+- 检测：`1`=开，`0`=关
+- 扫码：`1`=开，`0`=关
+- 示例：`xj1 1 1` = 槽位1 检测开+扫码开
+
+### 摄像头生命周期（产线控制）
+- **进入页面** → 自动打开已保存摄像头并预览（不检测）
+- **离开页面** → 关闭所有摄像头
+- **按钮/MQTT** → 只控制检测开关，不控制摄像头
+- `set_params()` 必须 `blockSignals(True)` 防止 `setCurrentIndex` 触发 `camera_changed` 信号自动启动
+
+### 摄像头检测
+- Windows 摄像头枚举：`pyusbcamerainindex`，fallback 用 WMI 查 Win32_PnPEntity
+- 摄像头打开用 `SlotCameraOpenThread` 异步，不阻塞 UI
+- 三个槽位共享模型实例 (`ProductionManager` 管理模型单例)
 
 ## 跨仓库关键问题
 

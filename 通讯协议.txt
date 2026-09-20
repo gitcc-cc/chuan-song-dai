@@ -1,0 +1,16 @@
+插ttl
+mosquitto_sub -t "test/hello"   订阅
+mosquitto_pub -t "test/hello" -m "你好MQTT"    发布
+
+传送带，ht/cmd/1         上位机到控制
+传送带，ht/status/1      状态到上位机
+相机，ht/cmd/2 设备到上位机                     xj1 1 1	相机1：检测开，扫码开
+相机，ht/status/2 上位机到设备
+
+mosquitto_pub -t "ht/cmd/2" -m "你好MQTT"  
+
+
+
+
+
+mosquitto_pub -h frp-box.com -p 15545 -t group_chat -m "欢迎海哥" -r
