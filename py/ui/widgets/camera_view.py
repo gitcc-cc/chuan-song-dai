@@ -48,9 +48,9 @@ class CameraView(QLabel):
         # 画笔
         self._box_pen = QPen(QColor(0, 255, 0), 2)
         self._qr_pen = QPen(QColor(255, 255, 255), 2)  # 白色二维码框
-        self._text_font = QFont("Microsoft YaHei", 10, QFont.Weight.Bold)
-        self._qr_font = QFont("Microsoft YaHei", 9, QFont.Weight.Bold)
-        self._fps_font = QFont("Microsoft YaHei", 11, QFont.Weight.Bold)
+        self._text_font = QFont("", 10, QFont.Weight.Bold)
+        self._qr_font = QFont("", 9, QFont.Weight.Bold)
+        self._fps_font = QFont("", 11, QFont.Weight.Bold)
 
     # ============ 公共接口 ============
     def update_frame(self, frame: np.ndarray):
@@ -104,7 +104,7 @@ class CameraView(QLabel):
 
         if self._frame is None:
             painter.setPen(QColor(128, 128, 128))
-            painter.setFont(QFont("Microsoft YaHei", 14))
+            painter.setFont(QFont("", 14))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
                            "等待摄像头画面...")
             return

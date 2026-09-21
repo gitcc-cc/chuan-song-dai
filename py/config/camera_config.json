@@ -1,11 +1,11 @@
 {
-  "model_path": "E:/D+/yolo/EzYOLO-main/runs/train/exp_1/weights/best.pt",
-  "camera_index": 0,
+  "model_path": "/media/chow/CC/D+/yolo/EzYOLO-main/runs/train/exp_1/weights/best.pt",
+  "camera_index": 2,
   "conf_threshold": 0.92,
   "iou_threshold": 0.45,
-  "window_geometry": "01d9d0cb0003000000000000fffffff9000005ff0000032f000000010000001d000005fe0000032e000000000200000006000000000000000017000005ff0000032f",
+  "window_geometry": "01d9d0cb000300000000005d0000003900000711000003df0000005d0000005e00000711000003df000000000000000007800000005d0000005e00000711000003df",
   "sidebar_expanded": false,
-  "last_model_dir": "E:/D+/yolo/EzYOLO-main/runs/train/exp_1/weights",
+  "last_model_dir": "/media/chow/CC/D+/yolo/EzYOLO-main/runs/train/exp_1/weights",
   "inference_interval": 1,
   "qr_interval": 1
 }

@@ -42,7 +42,7 @@ class SidebarButton(QPushButton):
 
         # 文字
         self._text_label = QLabel(title)
-        self._text_label.setFont(QFont("Microsoft YaHei", 10))
+        self._text_label.setFont(QFont("", 10))
         self._text_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
 
         # 布局
@@ -68,7 +68,7 @@ class SidebarButton(QPushButton):
         else:
             # 回退：用文字首字母
             self._icon_label.setText(self._title[0])
-            self._icon_label.setFont(QFont("Microsoft YaHei", 16, QFont.Weight.Bold))
+            self._icon_label.setFont(QFont("", 16, QFont.Weight.Bold))
             self._icon_label.setStyleSheet("color: #333333;")
 
     def set_expanded(self, expanded: bool):
@@ -183,7 +183,7 @@ class Sidebar(QWidget):
             self._toggle_btn.setIconSize(QSize(20, 20))
         else:
             self._toggle_btn.setText("<" if self._expanded else ">")
-            self._toggle_btn.setFont(QFont("Microsoft YaHei", 12))
+            self._toggle_btn.setFont(QFont("", 12))
 
     def _on_toggle_clicked(self):
         """折叠/展开按钮点击"""

@@ -2,11 +2,12 @@
 单槽位参数面板
 =============
 一个槽位的完整参数配置：摄像头选择 + 置信度 + IoU + 推理间隔 + 扫码间隔
+1号槽位额外支持「深度相机模式」（HP60C ROS2）。
 三个槽位各复制一份。
 """
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
-    QComboBox, QLabel, QPushButton
+    QComboBox, QLabel, QPushButton, QCheckBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
@@ -19,6 +20,7 @@ class SlotConfigPanel(QWidget):
     # 信号
     camera_changed = pyqtSignal(int, int)    # (slot_id, camera_index)
     param_changed = pyqtSignal(int, str, float)  # (slot_id, param_name, value)
+    depth_mode_changed = pyqtSignal(int, bool)   # (slot_id, enabled)
 
     _STYLE = """
         QGroupBox {
@@ -68,6 +70,13 @@ class SlotConfigPanel(QWidget):
         cam_row.addWidget(self.cam_combo, stretch=1)
         group_layout.addLayout(cam_row)
 
+        # 深度相机模式（仅1号槽位显示）
+        self._depth_check = QCheckBox("深度相机 (HP60C)")
+        self._depth_check.setToolTip("启用后通过 ROS2 订阅 HP60C 深度相机\n彩色图 + 深度图，检测框中心显示深度值")
+        self._depth_check.setVisible(self._slot_id == 1)
+        self._depth_check.toggled.connect(self._on_depth_mode_changed)
+        group_layout.addWidget(self._depth_check)
+
         # 置信度
         self.slider_conf = ParamSlider("置信度", 0.0, 1.0,
                                        default=0.5, step=0.01, decimals=2)
@@ -105,6 +114,20 @@ class SlotConfigPanel(QWidget):
         elif 0 < index <= len(self._camera_indices):
             cam_idx = self._camera_indices[index - 1]
             self.camera_changed.emit(self._slot_id, cam_idx)
+
+    def _on_depth_mode_changed(self, checked: bool):
+        """深度相机模式切换"""
+        # 深度模式下禁用摄像头选择
+        self.cam_combo.setEnabled(not checked)
+        self.depth_mode_changed.emit(self._slot_id, checked)
+
+    def is_depth_mode(self) -> bool:
+        """是否为深度相机模式"""
+        return self._depth_check.isChecked()
+
+    def set_depth_mode(self, enabled: bool):
+        """设置深度相机模式"""
+        self._depth_check.setChecked(enabled)
 
     def set_cameras(self, cameras: list):
         """

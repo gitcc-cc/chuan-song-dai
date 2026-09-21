@@ -1,9 +1,9 @@
-# AGENTS.md — 6.30传送带 (ESP32 传送带控制)
+# AGENTS.md — 6.30传送带 (ESP32 传送带控制 + Ubuntu 深度相机)
 
 ## 结构
 一个工作区，两个仓库：
 - **11/** — PlatformIO 固件 (ESP32-S3, Arduino)
-- **py/** — Python PyQt6 上位机 GUI (ESP32 控制中心)
+- **py/** — Python PyQt6 上位机 GUI (ESP32 控制中心 + HP60C 深度相机)
 
 ## 11/ — 固件
 
@@ -61,21 +61,31 @@ pio device monitor               # 串口监视器 (115200 baud)
 
 ### 运行
 ```bash
-cd py && python main.py
+cd py && ./run.sh
+# 或直接运行（需要手动 source ROS2 环境）：
+cd py && source /opt/ros/humble/setup.bash && source .venv/bin/activate && python3 main.py
 ```
+
+`run.sh` 自动完成：
+1. 源 ROS2 Humble 环境
+2. 激活 `.venv` 虚拟环境
+3. 后台启动 `ros2 launch ascamera hp60c.launch.py`（HP60C 深度相机节点）
+4. 等待 5 秒让相机初始化
+5. 启动 `main.py`
+6. 退出时自动关闭相机节点
 
 ### 依赖
 ```bash
 pip install -r requirements.txt
-# 额外 Windows 依赖：
-pip install wmi
+# Ubuntu ROS2 依赖（系统 apt 包）：
+sudo apt install -y $(grep -v '^#' ros-requirements.txt | tr '\n' ' ')
 ```
 
 ### 核心架构
 一个工作区，三个页面：
 - **传送带控制** (`conveyor_page.py`) — MQTT 连接入口 + 电机控制
 - **相机识别** (`camera_page.py`) — 单摄像头 YOLO + 二维码
-- **产线控制** (`production_page.py`) — 3路摄像头共享模型 + MQTT 指令控制
+- **产线控制** (`production_page.py`) — 3路摄像头共享模型 + MQTT 指令控制 + 1号槽位深度相机
 
 模块间连接方式：
 - **信号槽** — QThread→GUI、Manager→GUI、MQTT→GUI 都用 Qt 信号
@@ -107,16 +117,36 @@ pip install wmi
 - 扫码：`1`=开，`0`=关
 - 示例：`xj1 1 1` = 槽位1 检测开+扫码开
 
+### 深度相机（1号槽位 HP60C）
+- **ROS2 话题**：RGB `/ascamera_hp60c/camera_publisher/rgb0/image`，深度 `/ascamera_hp60c/camera_publisher/depth0/image_raw`
+- **深度格式**：uint16，单位毫米，最大范围约 1.5m
+- **深度相机节点**：`run.sh` 自动启动，进程组方式管理，退出时自动关闭
+- **槽位切换逻辑**：
+  - 勾选「深度相机 (HP60C)」→ 自动停止普通摄像头 → 启动 DepthWorker → 预览 RGB + 深度值
+  - 取消勾选 → 停止 DepthWorker
+  - 选"请选择摄像头" → 停止该槽位所有预览
+  - 下拉列表在深度模式下禁用（深度相机不需要手动选摄像头）
+- **深度 Worker** (`vision/depth_worker.py`)：QThread + rclpy.spin()，ROS2 订阅在后台线程
+- **深度值读取**：检测框中心点像素值，0 或越界返回 -1（显示 N/A）
+
+### 摄像头枚举（Ubuntu）
+- **优先用 `/sys/class/video4linux/video*/name`** 读设备名（不受设备占用影响）
+- 回退 `v4l2-ctl --list-devices`（ROS2 节点占用设备时会报错但仍输出部分结果）
+- 再回退 OpenCV 索引探测
+- **同名设备去重**：每个物理摄像头有 2 个 video 节点（采集 + 元数据），只保留第一个
+- `v4l2-ctl` 输出中的错误行（"Cannot open..."）已过滤
+
 ### 摄像头生命周期（产线控制）
-- **进入页面** → 自动打开已保存摄像头并预览（不检测）
+- **进入页面** → 自动打开已保存摄像头并预览（不检测）；深度模式则启动 DepthWorker
 - **离开页面** → 关闭所有摄像头
 - **按钮/MQTT** → 只控制检测开关，不控制摄像头
 - `set_params()` 必须 `blockSignals(True)` 防止 `setCurrentIndex` 触发 `camera_changed` 信号自动启动
 
-### 摄像头检测
-- Windows 摄像头枚举：`pyusbcamerainindex`，fallback 用 WMI 查 Win32_PnPEntity
-- 摄像头打开用 `SlotCameraOpenThread` 异步，不阻塞 UI
-- 三个槽位共享模型实例 (`ProductionManager` 管理模型单例)
+### 产线管理器 (`vision/production_manager.py`)
+- 模型单例：一个 YOLO 实例，三个 Worker 共享
+- 1号槽位支持 `start_slot_depth()` 启动深度相机模式
+- `_depth_mode` 数组跟踪每个槽位是否为深度模式
+- `stop_slot()` 同时清理普通 Worker 和深度 Worker
 
 ## 跨仓库关键问题
 

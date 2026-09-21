@@ -322,7 +322,7 @@ class CameraPage(BasePage):
 
         # FPS 显示
         self.lbl_fps = QLabel("FPS: 0.0")
-        self.lbl_fps.setFont(QFont("Microsoft YaHei", 11, QFont.Weight.Bold))
+        self.lbl_fps.setFont(QFont("", 11, QFont.Weight.Bold))
         self.lbl_fps.setStyleSheet("color: #07C160;")
         toolbar.addWidget(self.lbl_fps)
 
@@ -353,7 +353,7 @@ class CameraPage(BasePage):
         bottom_layout.setContentsMargins(0, 0, 0, 0)
 
         table_label = QLabel("检测结果列表 (右键可复制)")
-        table_label.setFont(QFont("Microsoft YaHei", 11, QFont.Weight.Bold))
+        table_label.setFont(QFont("", 11, QFont.Weight.Bold))
         table_label.setStyleSheet("color: #333; padding-bottom: 4px;")
         bottom_layout.addWidget(table_label)
 

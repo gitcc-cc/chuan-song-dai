@@ -3,6 +3,7 @@
 ==========
 - 模型单例：一个 YOLO 实例，三个 Worker 共享
 - 三个 Worker 独立运行，支持独立启停
+- 1号槽位支持深度相机模式（HP60C ROS2）
 - MQTT 指令解析：ht/cmd/2 → xj1/xj2/xj3/all
 - 检测结果发送：ht/status/2
 """
@@ -14,6 +15,7 @@ from PyQt6.QtCore import QObject, pyqtSignal, QThread
 
 from vision.detector import Detector
 from vision.worker import InferenceWorker
+from vision.depth_worker import DepthWorker
 from vision.camera import OpenCVCamera, BaseCamera
 from core.esp32_lib import ESP32
 
@@ -56,9 +58,11 @@ class ProductionManager(QObject):
         self._model_path = ""
 
         self._workers: list[InferenceWorker] = [None] * self.SLOT_COUNT
+        self._depth_workers: list[Optional[DepthWorker]] = [None] * self.SLOT_COUNT
         self._cameras: list[Optional[BaseCamera]] = [None] * self.SLOT_COUNT
         self._detectors: list[Optional[Detector]] = [None] * self.SLOT_COUNT
         self._running = [False] * self.SLOT_COUNT
+        self._depth_mode = [False] * self.SLOT_COUNT
         self._pending_params: list[dict] = [{}] * self.SLOT_COUNT
         self._open_threads: list = [None] * self.SLOT_COUNT
 
@@ -172,21 +176,77 @@ class ProductionManager(QObject):
         """摄像头打开失败"""
         print(f"[ProductionManager] 槽位{slot_id}: {error}")
 
+    def start_slot_depth(self, slot_id: int, params: dict) -> bool:
+        """
+        以深度相机模式启动指定槽位（仅1号槽位）
+        不需要 OpenCVCamera，ROS2 订阅直接获取图像。
+        params: {"conf": 0.5, "iou": 0.45, "inference_interval": 1, "qr_interval": 1}
+        """
+        idx = slot_id - 1
+        if idx != 0:
+            print(f"[ProductionManager] 深度模式仅支持槽位1")
+            return False
+
+        if self._running[idx]:
+            self.stop_slot(slot_id)
+
+        if not self._model_loaded:
+            print(f"[ProductionManager] 槽位{slot_id}: 模型未加载")
+            return False
+
+        # 创建 Detector（共享 model）
+        detector = Detector(external_model=self._model)
+        self._detectors[idx] = detector
+
+        # 创建 DepthWorker
+        worker = DepthWorker()
+        worker.set_detector(detector)
+        worker.set_params(
+            conf=params.get("conf", 0.5),
+            iou=params.get("iou", 0.45)
+        )
+        worker.set_inference_interval(params.get("inference_interval", 1))
+        worker.set_qr_interval(params.get("qr_interval", 1))
+        worker.set_qr_enabled(False)
+        worker.disable_inference()
+
+        # 连接信号
+        worker.detections_ready.connect(
+            lambda dets, s=slot_id: self._on_slot_detections(s, dets))
+        worker.qr_results_ready.connect(
+            lambda qrs, s=slot_id: self._on_slot_qr(s, qrs))
+
+        self._depth_workers[idx] = worker
+        self._depth_mode[idx] = True
+        self._running[idx] = True
+        worker.start_worker()
+        self.slot_started.emit(slot_id, worker)
+        print(f"[ProductionManager] 槽位{slot_id}: 深度相机模式已启动")
+        return True
+
     def enable_detection(self, slot_id: int):
         """开启指定槽位的检测（YOLO + 扫码）"""
         idx = slot_id - 1
-        if 0 <= idx < self.SLOT_COUNT and self._workers[idx]:
-            self._workers[idx].enable_inference()
-            self._workers[idx].set_qr_enabled(True)
+        if 0 <= idx < self.SLOT_COUNT:
+            if self._depth_mode[idx] and self._depth_workers[idx]:
+                self._depth_workers[idx].enable_inference()
+                self._depth_workers[idx].set_qr_enabled(True)
+            elif self._workers[idx]:
+                self._workers[idx].enable_inference()
+                self._workers[idx].set_qr_enabled(True)
             self.detection_toggled.emit(slot_id, True)
             print(f"[ProductionManager] 槽位{slot_id}: 检测已开启")
 
     def disable_detection(self, slot_id: int):
         """关闭指定槽位的检测（预览继续）"""
         idx = slot_id - 1
-        if 0 <= idx < self.SLOT_COUNT and self._workers[idx]:
-            self._workers[idx].disable_inference()
-            self._workers[idx].set_qr_enabled(False)
+        if 0 <= idx < self.SLOT_COUNT:
+            if self._depth_mode[idx] and self._depth_workers[idx]:
+                self._depth_workers[idx].disable_inference()
+                self._depth_workers[idx].set_qr_enabled(False)
+            elif self._workers[idx]:
+                self._workers[idx].disable_inference()
+                self._workers[idx].set_qr_enabled(False)
             self.detection_toggled.emit(slot_id, False)
             print(f"[ProductionManager] 槽位{slot_id}: 检测已关闭")
 
@@ -200,9 +260,15 @@ class ProductionManager(QObject):
         print(f"[ProductionManager] 槽位{slot_id} 停止")
         traceback.print_stack(limit=5)
 
+        # 停止普通 Worker
         if self._workers[idx]:
             self._workers[idx].stop()
             self._workers[idx] = None
+
+        # 停止深度 Worker
+        if self._depth_workers[idx]:
+            self._depth_workers[idx].stop()
+            self._depth_workers[idx] = None
 
         if self._cameras[idx]:
             self._cameras[idx].close()
@@ -210,6 +276,7 @@ class ProductionManager(QObject):
 
         self._detectors[idx] = None
         self._running[idx] = False
+        self._depth_mode[idx] = False
         print(f"[ProductionManager] 槽位 {slot_id} 停止")
 
     def stop_all(self):
@@ -229,6 +296,7 @@ class ProductionManager(QObject):
         if idx < 0 or idx >= self.SLOT_COUNT:
             return
 
+        # 普通 Worker
         worker = self._workers[idx]
         if worker and self._running[idx]:
             if "conf" in params:
@@ -239,6 +307,18 @@ class ProductionManager(QObject):
                 worker.set_inference_interval(int(params["inference_interval"]))
             if "qr_interval" in params:
                 worker.set_qr_interval(int(params["qr_interval"]))
+
+        # 深度 Worker
+        depth_worker = self._depth_workers[idx]
+        if depth_worker and self._running[idx]:
+            if "conf" in params:
+                depth_worker.set_params(conf=params["conf"])
+            if "iou" in params:
+                depth_worker.set_params(iou=params["iou"])
+            if "inference_interval" in params:
+                depth_worker.set_inference_interval(int(params["inference_interval"]))
+            if "qr_interval" in params:
+                depth_worker.set_qr_interval(int(params["qr_interval"]))
 
     # ============ 检测结果处理 ============
     def _on_slot_detections(self, slot_id: int, detections: list):
@@ -268,7 +348,11 @@ class ProductionManager(QObject):
             cy = int((bbox[1] + bbox[3]) / 2)
             cls_name = det.get("cls_name", str(det.get("cls", "")))
             qr = qr_bindings.get(i, "")
-            result_list.append({"cls": cls_name, "center": [cx, cy], "qr": qr})
+            depth = det.get("depth_mm", -1)
+            item = {"cls": cls_name, "center": [cx, cy], "qr": qr}
+            if depth > 0:
+                item["depth_mm"] = depth
+            result_list.append(item)
 
         if result_list:
             self._mqtt.send_prod_result(slot_id, result_list)
@@ -315,9 +399,15 @@ class ProductionManager(QObject):
                 self.disable_detection(slot_id)
             # 扫码独立控制
             idx = slot_id - 1
+            # 普通 Worker
             worker = self._workers[idx]
             if worker and self._running[idx]:
                 worker.set_qr_enabled(bool(qr_on))
+                self.qr_toggled.emit(slot_id, bool(qr_on))
+            # 深度 Worker
+            depth_worker = self._depth_workers[idx]
+            if depth_worker and self._running[idx]:
+                depth_worker.set_qr_enabled(bool(qr_on))
                 self.qr_toggled.emit(slot_id, bool(qr_on))
 
     # ============ 清理 ============
@@ -326,3 +416,4 @@ class ProductionManager(QObject):
         self.stop_all()
         self._model = None
         self._model_loaded = False
+        self._depth_workers = [None] * self.SLOT_COUNT

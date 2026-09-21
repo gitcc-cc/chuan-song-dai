@@ -121,7 +121,7 @@ class ConveyorPage(BasePage):
 
         # 标题
         title = QLabel("ESP32 控制中心")
-        title.setFont(QFont("Microsoft YaHei", 18, QFont.Weight.Bold))
+        title.setFont(QFont("", 18, QFont.Weight.Bold))
         title.setStyleSheet("color: #333333; border: none;")
         layout.addWidget(title)
         layout.addSpacing(30)
@@ -158,14 +158,14 @@ class ConveyorPage(BasePage):
 
         # 时钟
         self.lbl_clock = QLabel("00:00:00")
-        self.lbl_clock.setFont(QFont("Microsoft YaHei", 15))
+        self.lbl_clock.setFont(QFont("", 15))
         self.lbl_clock.setStyleSheet("color: #999999;")
         layout.addWidget(self.lbl_clock)
         layout.addSpacing(15)
 
         # 连接状态
         self.lbl_conn = QLabel("未连接")
-        self.lbl_conn.setFont(QFont("Microsoft YaHei", 15))
+        self.lbl_conn.setFont(QFont("", 15))
         self.lbl_conn.setStyleSheet("color: #fa5151; font-weight: bold;")
         layout.addWidget(self.lbl_conn)
 
@@ -352,7 +352,7 @@ class ConveyorPage(BasePage):
         log_layout = QVBoxLayout(log_group)
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setFont(QFont("Microsoft YaHei", 13))
+        self.log_text.setFont(QFont("", 13))
         log_layout.addWidget(self.log_text)
         layout.addWidget(log_group, stretch=1)
 

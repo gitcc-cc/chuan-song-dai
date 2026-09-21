@@ -1,0 +1,13 @@
+# ROS2 系统依赖（通过 apt 安装，不是 pip）
+# 用法: sudo apt install -y $(grep -v '^#' ros-requirements.txt | tr '\n' ' ')
+
+# ROS2 Humble 基础
+ros-humble-desktop
+ros-humble-rclpy
+ros-humble-sensor-msgs
+ros-humble-cv-bridge
+ros-humble-image-transport
+
+# HP60C 深度相机驱动（从源码编译，不在 apt 中）
+# 需手动 clone + colcon build，参考 ascamera 驱动文档
+# ros-humble-ascamera

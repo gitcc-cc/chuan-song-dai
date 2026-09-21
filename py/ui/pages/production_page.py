@@ -181,6 +181,7 @@ class ProductionPage(BasePage):
             panel = SlotConfigPanel(slot_id=i + 1)
             panel.camera_changed.connect(self._on_camera_selected)
             panel.param_changed.connect(self._on_param_changed)
+            panel.depth_mode_changed.connect(self._on_depth_mode_changed)
             self._slot_config_panels.append(panel)
             left_layout.addWidget(panel)
 
@@ -275,7 +276,7 @@ class ProductionPage(BasePage):
                 background-color: transparent;
                 color: #000000;
                 border: 1px solid #eee;
-                font-family: Consolas, monospace;
+                font-family: Monospace, Consolas, monospace;
                 font-size: 10px;
                 padding: 2px 4px;
             }
@@ -291,7 +292,7 @@ class ProductionPage(BasePage):
                 background-color: transparent;
                 color: #000000;
                 border: 1px solid #eee;
-                font-family: Consolas, monospace;
+                font-family: Monospace, Consolas, monospace;
                 font-size: 10px;
                 padding: 2px 4px;
             }
@@ -374,15 +375,30 @@ class ProductionPage(BasePage):
     # ============ 槽位启停 ============
     def _on_camera_selected(self, slot_id: int, cam_idx: int):
         """摄像头选择后启动预览（不启动检测）"""
-        self._log(f"槽位{slot_id}: 选择摄像头 {cam_idx}")
+        idx = slot_id - 1
         if cam_idx < 0:
+            # 选了"请选择摄像头"→ 停止该槽位
+            if self._manager and self._manager.is_running(slot_id):
+                # 先断开 worker 信号，防止残留帧覆盖 clear
+                worker = self._manager._workers[idx] or self._manager._depth_workers[idx]
+                if worker:
+                    try:
+                        worker.frame_ready.disconnect()
+                        worker.detections_ready.disconnect()
+                    except TypeError:
+                        pass
+                self._manager.stop_slot(slot_id)
+                self._slot_start_btns[idx].setChecked(False)
+                self._slot_start_btns[idx].setText("检测")
+                self._slot_lists[idx].clear_all()
+                self._slot_views[idx].clear()
             return
         if not self._manager or not self._manager.model_loaded:
             self._log(f"槽位{slot_id}: 模型未加载，跳过")
             return
         if self._manager.is_running(slot_id):
             self._manager.stop_slot(slot_id)
-        params = self._slot_config_panels[slot_id - 1].get_params()
+        params = self._slot_config_panels[idx].get_params()
         ok = self._manager.start_slot(slot_id, cam_idx, params)
         btn = self._slot_start_btns[slot_id - 1]
         btn.setChecked(False)
@@ -395,45 +411,117 @@ class ProductionPage(BasePage):
         btn = self._slot_start_btns[idx]
 
         if self._manager and self._manager.is_running(slot_id):
-            worker = self._manager._workers[idx]
-            if worker and worker._inference_enabled:
-                self._manager.disable_detection(slot_id)
-                self._log(f"槽位{slot_id}: 检测已关闭")
+            # 已运行 → 切换检测开关
+            if self._manager._depth_mode[idx]:
+                dw = self._manager._depth_workers[idx]
+                if dw and dw._inference_enabled:
+                    self._manager.disable_detection(slot_id)
+                    self._log(f"槽位{slot_id}: 检测已关闭")
+                else:
+                    if not self._manager.model_loaded:
+                        self._log(f"槽位{slot_id}: 请先加载模型")
+                        btn.setChecked(False)
+                        return
+                    self._manager.enable_detection(slot_id)
+                    self._log(f"槽位{slot_id}: 检测已开启")
             else:
-                if not self._manager.model_loaded:
+                worker = self._manager._workers[idx]
+                if worker and worker._inference_enabled:
+                    self._manager.disable_detection(slot_id)
+                    self._log(f"槽位{slot_id}: 检测已关闭")
+                else:
+                    if not self._manager.model_loaded:
+                        self._log(f"槽位{slot_id}: 请先加载模型")
+                        btn.setChecked(False)
+                        return
+                    self._manager.enable_detection(slot_id)
+                    self._log(f"槽位{slot_id}: 检测已开启")
+        else:
+            # 未运行 → 启动
+            # 检查是否为深度相机模式（仅1号槽位）
+            is_depth = (idx == 0 and self._slot_config_panels[idx].is_depth_mode())
+
+            if is_depth:
+                # 深度模式：不需要选择摄像头
+                if not self._manager or not self._manager.model_loaded:
                     self._log(f"槽位{slot_id}: 请先加载模型")
                     btn.setChecked(False)
                     return
-                self._manager.enable_detection(slot_id)
-                self._log(f"槽位{slot_id}: 检测已开启")
-        else:
-            cam_idx = self._slot_config_panels[idx].get_camera_index()
-            if cam_idx < 0:
-                self._log(f"槽位{slot_id}: 请先选择摄像头")
-                btn.setChecked(False)
-                return
-            if not self._manager or not self._manager.model_loaded:
-                self._log(f"槽位{slot_id}: 请先加载模型")
-                btn.setChecked(False)
-                return
-            btn.setText("启动中...")
-            btn.setEnabled(False)
-            self._log(f"槽位{slot_id}: 正在打开摄像头...")
-            params = self._slot_config_panels[idx].get_params()
-            ok = self._manager.start_slot(slot_id, cam_idx, params)
-            if not ok:
-                btn.setText("检测")
-                btn.setEnabled(True)
-                btn.setChecked(False)
+                btn.setText("启动中...")
+                btn.setEnabled(False)
+                self._log(f"槽位{slot_id}: 正在启动深度相机...")
+                params = self._slot_config_panels[idx].get_params()
+                ok = self._manager.start_slot_depth(slot_id, params)
+                if not ok:
+                    btn.setText("检测")
+                    btn.setEnabled(True)
+                    btn.setChecked(False)
+            else:
+                # 普通模式：需要选择摄像头
+                cam_idx = self._slot_config_panels[idx].get_camera_index()
+                if cam_idx < 0:
+                    self._log(f"槽位{slot_id}: 请先选择摄像头")
+                    btn.setChecked(False)
+                    return
+                if not self._manager or not self._manager.model_loaded:
+                    self._log(f"槽位{slot_id}: 请先加载模型")
+                    btn.setChecked(False)
+                    return
+                btn.setText("启动中...")
+                btn.setEnabled(False)
+                self._log(f"槽位{slot_id}: 正在打开摄像头...")
+                params = self._slot_config_panels[idx].get_params()
+                ok = self._manager.start_slot(slot_id, cam_idx, params)
+                if not ok:
+                    btn.setText("检测")
+                    btn.setEnabled(True)
+                    btn.setChecked(False)
 
     def _on_toggle_qr(self, slot_id: int):
         idx = slot_id - 1
         btn = self._slot_qr_btns[idx]
         enabled = btn.isChecked()
         if self._manager and self._manager.is_running(slot_id):
-            worker = self._manager._workers[idx]
-            if worker:
-                worker.set_qr_enabled(enabled)
+            # 深度模式
+            if self._manager._depth_mode[idx]:
+                dw = self._manager._depth_workers[idx]
+                if dw:
+                    dw.set_qr_enabled(enabled)
+            else:
+                worker = self._manager._workers[idx]
+                if worker:
+                    worker.set_qr_enabled(enabled)
+
+    def _on_depth_mode_changed(self, slot_id: int, enabled: bool):
+        """深度相机模式切换 → 启动/停止预览 + 更新列表列头"""
+        idx = slot_id - 1
+        self._slot_lists[idx].set_depth_mode(enabled)
+
+        if enabled:
+            # 勾选 → 先停掉普通摄像头，再启动 DepthWorker
+            if self._manager and self._manager.model_loaded:
+                if self._manager.is_running(slot_id):
+                    self._manager.stop_slot(slot_id)
+                params = self._slot_config_panels[idx].get_params()
+                self._log(f"槽位{slot_id}: 启动深度相机预览")
+                self._manager.start_slot_depth(slot_id, params)
+            self._log(f"槽位{slot_id}: 深度相机模式已开启")
+        else:
+            # 取消勾选 → 停止 DepthWorker
+            if self._manager and self._manager.is_running(slot_id) and self._manager._depth_mode[idx]:
+                dw = self._manager._depth_workers[idx]
+                if dw:
+                    try:
+                        dw.frame_ready.disconnect()
+                        dw.detections_ready.disconnect()
+                    except TypeError:
+                        pass
+                self._manager.stop_slot(slot_id)
+                self._slot_start_btns[idx].setChecked(False)
+                self._slot_start_btns[idx].setText("检测")
+                self._slot_lists[idx].clear_all()
+                self._slot_views[idx].clear()
+            self._log(f"槽位{slot_id}: 深度相机模式已关闭")
 
     def _on_toggle_left_panel(self):
         """折叠/展开左侧参数面板"""
@@ -500,9 +588,14 @@ class ProductionPage(BasePage):
         idx = slot_id - 1
         # 重新绑定（与当前帧的检测结果匹配）
         detections = []
-        worker = self._manager._workers[idx] if self._manager else None
-        if worker and hasattr(worker, '_last_detections'):
-            detections = worker._last_detections
+        if self._manager and self._manager._depth_mode[idx]:
+            dw = self._manager._depth_workers[idx]
+            if dw and hasattr(dw, '_last_detections'):
+                detections = dw._last_detections
+        else:
+            worker = self._manager._workers[idx] if self._manager else None
+            if worker and hasattr(worker, '_last_detections'):
+                detections = worker._last_detections
         self._slot_qr_bindings[idx] = match_qr_to_detections(qr_results, detections)
 
     def _on_worker_error(self, slot_id: int, error: str):
@@ -541,8 +634,7 @@ class ProductionPage(BasePage):
         else:
             btn.setChecked(False)
             btn.setText("检测")
-            self._slot_lists[idx].clear_all()
-            self._slot_views[idx].update_detections([])
+            # 保留最后一帧的检测框和列表，不清理
 
     def _on_qr_toggled(self, slot_id: int, enabled: bool):
         """扫码状态变化 → 更新按钮"""
@@ -563,13 +655,11 @@ class ProductionPage(BasePage):
             self._mqtt_status_dot.setStyleSheet("color: #e74c3c; font-size: 14px;")
             self._mqtt_status_label.setText("MQTT 未连接")
             self._mqtt_status_label.setStyleSheet("font-size: 12px; color: #e74c3c;")
-            print(f"[产线轮询] 未连接 | id={id(shared)} broker={shared.broker} connected_flag={shared.connected} paho={shared.client.is_connected()}")
         # 同步 manager 的 mqtt 引用（只要连上了就绑定回调）
         if connected and self._manager:
             if self._manager._mqtt is not shared:
                 self._manager._mqtt = shared
                 shared.set_prod_cmd_callback(self._manager._parse_mqtt_cmd)
-                print(f"[产线] 绑定共享 MQTT: {shared.broker}")
         elif connected:
             if self._manager:
                 shared.set_prod_cmd_callback(self._manager._parse_mqtt_cmd)
@@ -662,10 +752,20 @@ class ProductionPage(BasePage):
         # 自动打开已保存摄像头并预览（不启动检测）
         for i in range(3):
             slot_id = i + 1
+            if self._manager and self._manager.is_running(slot_id):
+                continue
+
+            # 深度模式（仅1号槽位）
+            is_depth = (i == 0 and self._slot_config_panels[i].is_depth_mode())
+            if is_depth:
+                params = self._slot_config_panels[i].get_params()
+                self._log(f"槽位{slot_id}: 自动启动深度相机")
+                self._manager.start_slot_depth(slot_id, params)
+                continue
+
+            # 普通模式
             cam_idx = self._slot_config_panels[i].get_camera_index()
             if cam_idx < 0:
-                continue
-            if self._manager and self._manager.is_running(slot_id):
                 continue
             params = self._slot_config_panels[i].get_params()
             self._log(f"槽位{slot_id}: 自动打开摄像头 {cam_idx}")
@@ -675,14 +775,22 @@ class ProductionPage(BasePage):
         """页面隐藏时：关闭所有摄像头"""
         for slot_id in range(1, 4):
             if self._manager and self._manager.is_running(slot_id):
-                self._manager.stop_slot(slot_id)
                 idx = slot_id - 1
+                # 先断开 worker 信号
+                worker = self._manager._workers[idx] or self._manager._depth_workers[idx]
+                if worker:
+                    try:
+                        worker.frame_ready.disconnect()
+                        worker.detections_ready.disconnect()
+                    except TypeError:
+                        pass
+                self._manager.stop_slot(slot_id)
                 btn = self._slot_start_btns[idx]
                 btn.setChecked(False)
                 btn.setText("检测")
                 btn.setEnabled(True)
                 self._slot_lists[idx].clear_all()
-                self._slot_views[idx].update_detections([])
+                self._slot_views[idx].clear()
 
     def save_state(self):
         """保存所有槽位参数"""

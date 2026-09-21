@@ -13,7 +13,7 @@ QMainWindow {
 QWidget {
     background-color: #ededed;
     color: #333333;
-    font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif;
+    font-family: 'Noto Sans CJK SC', 'Microsoft YaHei', 'Segoe UI', sans-serif;
     font-size: 16px;
 }
 QGroupBox {
