@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QSizePolicy
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPropertyAnimation, QEasingCurve
-from PyQt6.QtGui import QIcon, QFont, QPixmap
+from PyQt6.QtGui import QFont, QPixmap
 
 try:
     import qtawesome as qta

@@ -5,7 +5,6 @@
 独立运行，不依赖主程序。
 用法: python depth_test.py
 """
-import sys
 import time
 import numpy as np
 import cv2

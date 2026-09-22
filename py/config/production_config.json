@@ -6,7 +6,7 @@
   "window_geometry": null,
   "sidebar_expanded": true,
   "slot_1": {
-    "camera_index": 2,
+    "camera_index": -1,
     "conf": 0.89,
     "iou": 0.45,
     "inference_interval": 1,

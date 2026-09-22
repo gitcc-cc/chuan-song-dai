@@ -4,7 +4,7 @@
 QTableWidget 显示：ID、类别、置信度、坐标(x1,y1,x2,y2)、二维码内容
 支持：复制、自动滚动、最大行数限制
 """
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 
 from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QMenu
