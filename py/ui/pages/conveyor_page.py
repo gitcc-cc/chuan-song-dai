@@ -3,14 +3,14 @@
 =============
 职责：传送带控制页面，包含 MQTT 连接管理和电机控制功能
 功能：
-1. MQTT 连接管理：连接/断开 ESP32 设备，显示连接状态
+1. MQTT 连接管理：连接/断开主控，显示连接状态
 2. 电机控制：正转、反转、停止、自动模式切换
 3. 速度控制：通过滑块或输入框调整电机速度
 4. 状态监控：实时显示设备状态（电机模式、电位器值、传感器状态等）
 5. 指令发送：支持手动输入 MQTT 指令
 6. 日志记录：显示通信日志，便于调试
 
-技术栈：PyQt6 + MQTT + ESP32
+技术栈：PyQt6 + MQTT + 主控
 """
 from datetime import datetime
 import threading
@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
 from PyQt6.QtGui import QFont
 
-from core.esp32_client import get_shared_esp32, connect_shared, disconnect_shared
+from core.mqtt_shared import get_shared_mqtt, connect_shared, disconnect_shared
 from core.controller import Controller
 from ui.pages.base_page import BasePage
 from styles import STYLE
@@ -60,7 +60,7 @@ class ConveyorPage(BasePage):
     传送带控制页面
     
     主要功能：
-    1. 连接 ESP32 设备（通过 MQTT）
+    1. 连接主控（通过 MQTT）
     2. 控制传送带电机（正转、反转、停止、自动）
     3. 调整电机速度（滑块或输入框）
     4. 显示设备实时状态
@@ -87,10 +87,10 @@ class ConveyorPage(BasePage):
         super().__init__(parent)
 
         # 通信层 & 逻辑层
-        # client: MQTT 客户端，负责与 ESP32 设备通信
+        # client: MQTT 客户端，负责与主控通信
         # controller: 控制器，封装业务逻辑（如状态文本转换）
         # signals: 信号对象，用于后台线程安全地更新 UI
-        self.client = get_shared_esp32()
+        self.client = get_shared_mqtt()
         self.controller = Controller()
         self.signals = WorkerSignals()
 
@@ -105,7 +105,7 @@ class ConveyorPage(BasePage):
         }
 
         # 速度模式：0=就地(电位器)，1=远程(滑块)
-        # 就地模式：速度由 ESP32 上的电位器控制
+        # 就地模式：速度由主控上的电位器控制
         # 远程模式：速度由 GUI 滑块控制
         self.speed_mode = 0
         
@@ -221,7 +221,7 @@ class ConveyorPage(BasePage):
         layout.setContentsMargins(15, 8, 15, 8)  # 左、上、右、下边距
 
         # 标题
-        title = QLabel("ESP32 控制中心")
+        title = QLabel("产线控制中心")
         title.setFont(QFont("", 18, QFont.Weight.Bold))  # 字体大小18，加粗
         title.setStyleSheet("color: #333333; border: none;")
         layout.addWidget(title)
@@ -229,7 +229,7 @@ class ConveyorPage(BasePage):
 
         # IP 输入框
         # 导入默认 Broker 地址和端口
-        from core.esp32_client import DEFAULT_BROKER, DEFAULT_PORT
+        from core.mqtt_shared import DEFAULT_BROKER, DEFAULT_PORT
         ip_label = QLabel("IP:")
         ip_label.setStyleSheet("color: #333333; font-size: 15px; font-weight: bold;")
         layout.addWidget(ip_label)
@@ -251,7 +251,7 @@ class ConveyorPage(BasePage):
         self.port_entry.setStyleSheet(self._input_style())
         layout.addWidget(self.port_entry)
 
-        # 连接按钮：点击后连接或断开 ESP32 设备
+        # 连接按钮：点击后连接或断开主控
         self.btn_connect = QPushButton("连接设备")
         self.btn_connect.setFixedWidth(100)
         self.btn_connect.setStyleSheet(self._connect_btn_style(False))
@@ -648,7 +648,7 @@ class ConveyorPage(BasePage):
         2. 启动状态轮询定时器
         
         为什么需要状态轮询？
-        - ESP32 设备状态可能变化（如传感器触发、电位器调整）
+        - 主控状态可能变化（如传感器触发、电位器调整）
         - 轮询可以主动获取最新状态，保持 UI 同步
         - 轮询间隔 2000ms（2秒），平衡实时性和网络负载
         """
@@ -778,7 +778,7 @@ class ConveyorPage(BasePage):
         
         数据流向：
         1. 轮询定时器发送 'status' 命令
-        2. ESP32 返回状态 JSON
+        2. 主控返回状态 JSON
         3. 解析后发射 status_update 信号
         4. 此槽函数被调用，更新 UI
         """
@@ -852,7 +852,7 @@ class ConveyorPage(BasePage):
         """
         切换速度模式：就地模式 ↔ 远程模式
         
-        就地模式 (mode=0)：速度由 ESP32 上的电位器控制
+        就地模式 (mode=0)：速度由主控上的电位器控制
         远程模式 (mode=1)：速度由 GUI 滑块控制
         
         发送的 MQTT 命令：
@@ -877,7 +877,7 @@ class ConveyorPage(BasePage):
         
         功能：
         1. 同步更新速度输入框
-        2. 如果是远程模式，发送速度命令到 ESP32
+        2. 如果是远程模式，发送速度命令到主控
         
         为什么需要 slider_updating 标志？
         - 程序更新滑块值时会触发 valueChanged 信号
@@ -931,7 +931,7 @@ class ConveyorPage(BasePage):
 
     def _send_command(self, cmd):
         """
-        发送 MQTT 命令到 ESP32 设备
+        发送 MQTT 命令到主控
         
         参数：
             cmd: 要发送的命令字符串（如 "dj 1", "speed 5", "status"）

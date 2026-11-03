@@ -194,6 +194,18 @@ class InferenceWorker(QThread):
         self._qr_interval = max(1, interval)
         self._mutex.unlock()
 
+    def set_qr_slice(self, slice_ms: int, fp_thresh: float = None):
+        """
+        设置 v1.2 渐进式搜索的时间片（v1.2 已并入 QRDecoder）
+
+        参数：
+            slice_ms: 时间片毫秒数。0=关闭（v1.1 原行为，解不出帧烧满
+                      rectify_budget_ms=5000，预览冻结）；600=启用时间片+
+                      搜索游标+帧指纹门（单次最坏 ~1s，跨帧续搜）
+            fp_thresh: 指纹门阈值（仅 slice_ms>0 生效），None=保持当前值
+        """
+        self._qr_decoder.set_slice(slice_ms, fp_thresh)
+
     # ==================== 线程控制方法 ====================
     # 这些方法控制线程的启动、停止和推理模式
 
@@ -365,14 +377,14 @@ class InferenceWorker(QThread):
                     classes=self._classes                  # 类别过滤
                 )
                 # 发射检测结果，GUI 收到后会在预览帧上绘制检测框
+                self._last_detections = detections  # 缓存：供 QR 结果匹配检测框用
                 self.detections_ready.emit(detections)
 
                 # --- 第七步：YOLO 触发时同时执行二维码解码 ---
-                # 二维码解码与 YOLO 推理共用同一个触发条件（should_infer）
-                # 但有独立的间隔控制（qr_interval）
-                # 这样设计是因为二维码解码也需要逐帧处理，可以复用推理的帧
+                # 有检测框时优先 ROI 裁剪放大解码，失败再整帧
                 if qr_enabled and self._frame_count % qr_interval == 0:
-                    qr_results = self._qr_decoder.decode(frame)
+                    rois = [d.get("bbox") for d in detections if d.get("bbox")]
+                    qr_results = self._qr_decoder.decode(frame, rois=rois)
                     self.qr_results_ready.emit(qr_results)
 
             # --- 第八步：FPS 统计 ---

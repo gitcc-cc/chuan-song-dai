@@ -5,6 +5,19 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CAMERA_PID=""
+
+# 清理函数：无论正常退出还是异常中断，都关闭相机节点
+cleanup() {
+    if [ -n "$CAMERA_PID" ]; then
+        kill -- -"$CAMERA_PID" 2>/dev/null || true
+        # 兜底：杀干净可能残留的 launch/node
+        pkill -f "hp60c.launch.py" 2>/dev/null || true
+        pkill -f "ascamera_node" 2>/dev/null || true
+        echo "[run.sh] 相机节点已关闭"
+    fi
+}
+trap cleanup EXIT
 
 # 1. 源 ROS 2 环境
 if [ -f /opt/ros/humble/setup.bash ]; then
@@ -30,8 +43,18 @@ python3 -c "import paho.mqtt" 2>/dev/null || { echo "[run.sh] 缺少 paho-mqtt: 
 python3 -c "import cv2" 2>/dev/null || { echo "[run.sh] 缺少 opencv: pip install opencv-python-headless"; exit 1; }
 
 # 4. 启动深度相机节点（后台，进程组）
-echo "[run.sh] 启动深度相机节点..."
-setsid ros2 launch ascamera hp60c.launch.py > /dev/null 2>&1 &
+# 假设相机已插好；运行中拔插请用界面上的「重启相机」按钮
+
+# 4a. 启动前清场：杀残留 + 清 ROS 缓存，保证干净启动
+# 先杀 launch（respawn 已关，但残留 launch 仍会占 UVC）
+pkill -f "hp60c.launch.py" 2>/dev/null || true
+pkill -f "ascamera_node" 2>/dev/null || true
+pkill -f "ros2 launch ascamera" 2>/dev/null || true
+ros2 daemon stop 2>/dev/null || true
+sleep 1
+
+echo "[run.sh] 启动深度相机节点（日志: /tmp/hp60c_camera.log）..."
+setsid ros2 launch ascamera hp60c.launch.py > /tmp/hp60c_camera.log 2>&1 &
 CAMERA_PID=$!
 sleep 5
 
@@ -41,7 +64,5 @@ cd "$SCRIPT_DIR"
 python3 main.py "$@"
 EXIT_CODE=$?
 
-# 6. 关闭相机节点（杀整个进程组）
-kill -- -$CAMERA_PID 2>/dev/null || pkill -f "hp60c.launch.py" 2>/dev/null || true
-echo "[run.sh] 相机节点已关闭"
+# 6. 清理（trap cleanup EXIT 会自动执行）
 exit $EXIT_CODE

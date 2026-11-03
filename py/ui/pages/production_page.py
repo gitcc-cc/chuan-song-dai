@@ -8,7 +8,7 @@
      - 选择一个普通 USB 摄像头（OpenCV），或
      - 1号槽位额外支持深度相机模式（ROS2 HP60C，通过 DepthWorker 订阅 RGB+深度话题）
   2. 加载 YOLO 模型并共享给所有槽位（单例模型，多 Worker 共享）
-  3. 通过 MQTT 与 ESP32 传送带通信：
+  3. 通过 MQTT 与主控传送带通信：
      - 接收指令：xj1/xj2/xj3 + 检测/扫码开关
      - 发送检测结果和二维码匹配结果
   4. UI 布局：左侧参数面板（可折叠） + 顶部工具栏（MQTT状态、启停按钮、日志） + 右侧三列预览与检测列表
@@ -22,7 +22,7 @@
   - CameraView：视频预览组件（显示帧 + FPS + 检测框）
   - DetectionList：检测结果列表组件
   - SlotConfigPanel：单个槽位的参数配置面板（摄像头选择、置信度、IoU等）
-  - ESP32：MQTT 客户端，通过 get_shared_esp32() 获取全局单例
+  - MqttClient：MQTT 客户端，通过 get_shared_mqtt() 获取全局单例
 """
 """
 注意：本文件只添加注释，不修改任何代码逻辑。
@@ -62,18 +62,19 @@ from ui.widgets.detection_list import DetectionList
 # SlotConfigPanel: 单个槽位的参数配置面板（摄像头选择、置信度滑块等）
 from ui.widgets.slot_config_panel import SlotConfigPanel
 # ProductionManager: 产线管理器（单例），负责模型加载、Worker 启停、MQTT 收发
-from vision.production_manager import ProductionManager
+# RestartCameraThread: 后台重启深度相机 ROS2 节点的线程
+from vision.production_manager import ProductionManager, RestartCameraThread
 # BaseCamera: 摄像头基类，提供 list_cameras() 静态方法枚举系统摄像头
 from vision.camera import BaseCamera
 # match_qr_to_detections: 将二维码扫描结果与当前帧的检测框进行匹配绑定
 from vision.qr_decoder import match_qr_to_detections
 # get_production_config: 获取产线配置的全局单例（JSON 存储）
 from core.config import get_production_config
-# ESP32: MQTT 客户端类，封装了与 ESP32 传送带的通信协议
-from core.esp32_lib import ESP32
-# get_shared_esp32: 获取全局唯一的 ESP32 MQTT 实例（所有页面共用）
+# MqttClient: MQTT 客户端类，封装了与主控传送带的通信协议
+from core.mqtt_client import MqttClient
+# get_shared_mqtt: 获取全局唯一的 MqttClient 实例（所有页面共用）
 # connect_shared: 通过全局实例连接 MQTT broker
-from core.esp32_client import get_shared_esp32, connect_shared
+from core.mqtt_shared import get_shared_mqtt, connect_shared
 
 # ============ 全局共享摄像头缓存 ============
 # 全局变量，在模块级别存储，所有页面实例共享同一份摄像头列表
@@ -246,7 +247,7 @@ class ProductionPage(BasePage):
         self.config = get_production_config()
 
         # MQTT 客户端引用（初始为 None，连接后赋值）
-        self._mqtt: Optional[ESP32] = None
+        self._mqtt: Optional[MqttClient] = None
 
         # 创建产线管理器（单例）—— 核心业务逻辑都在这里
         self._manager = ProductionManager()
@@ -394,6 +395,7 @@ class ProductionPage(BasePage):
             panel.camera_changed.connect(self._on_camera_selected)      # 摄像头选择变化
             panel.param_changed.connect(self._on_param_changed)        # 参数滑块变化
             panel.depth_mode_changed.connect(self._on_depth_mode_changed)  # 深度模式开关变化
+            panel.restart_camera_clicked.connect(self._on_restart_camera)   # 手动重启相机节点
             self._slot_config_panels.append(panel)  # 保存引用，后续需要访问
             left_layout.addWidget(panel)
 
@@ -913,6 +915,52 @@ class ProductionPage(BasePage):
                 self._slot_views[idx].clear()
             self._log(f"槽位{slot_id}: 深度相机模式已关闭")
 
+    def _on_restart_camera(self, slot_id: int):
+        """
+        点击「重启相机」按钮：手动重启深度相机 ROS2 节点（拔插后用）。
+        无自动重连；整个过程在 RestartCameraThread 后台执行，约 11 秒。
+        """
+        if slot_id != 1:
+            return
+        if getattr(self, "_restarting_camera", False):
+            return  # 防重复点击
+        self._restarting_camera = True
+
+        panel = self._slot_config_panels[0]
+        panel.set_restart_enabled(False)
+        panel.set_restart_text("重启中…")
+        self._log("深度相机: 正在重启 ROS2 节点（约 11 秒）…")
+
+        # 记录重启前深度模式是否在跑，完成后自动恢复预览
+        was_depth = bool(self._manager and self._manager._depth_mode[0]
+                         and self._manager.is_running(1))
+        if was_depth and self._manager:
+            self._manager.stop_slot(1)
+
+        self._restart_thread = RestartCameraThread(self)
+        self._restart_thread.done.connect(
+            lambda ok, msg, was=was_depth: self._on_restart_camera_done(ok, msg, was)
+        )
+        self._restart_thread.start()
+
+    def _on_restart_camera_done(self, ok: bool, message: str, resume_depth: bool):
+        """重启线程结束回调（主线程）：恢复按钮状态，按需恢复深度预览。"""
+        self._restarting_camera = False
+        panel = self._slot_config_panels[0]
+        panel.set_restart_enabled(True)
+        panel.set_restart_text("重启相机")
+
+        if not ok:
+            self._log(f"深度相机: 重启失败（{message}），详见 /tmp/hp60c_camera.log")
+            return
+
+        self._log(f"深度相机: {message}")
+        # 若重启前深度模式开着，自动重新拉起 DepthWorker 预览
+        if resume_depth and self._manager and self._manager.model_loaded:
+            params = self._slot_config_panels[0].get_params()
+            self._manager.start_slot_depth(1, params)
+            self._log("深度相机: 预览已恢复")
+
     def _on_toggle_left_panel(self):
         """
         点击折叠按钮后执行 —— 隐藏/显示左侧参数面板。
@@ -961,7 +1009,9 @@ class ProductionPage(BasePage):
             return
 
         # 获取该槽位的 Worker（如果正在运行）
-        worker = self._manager._workers[slot_id - 1]
+        # 深度模式下普通 _workers[i] 为空，实际跑的是 _depth_workers[i]
+        worker = self._manager._workers[slot_id - 1] or \
+            self._manager._depth_workers[slot_id - 1]
         if not worker:
             return  # Worker 未启动，参数变化无意义
 
@@ -977,6 +1027,11 @@ class ProductionPage(BasePage):
 
         # 保存到配置文件（JSON），下次启动自动加载
         self.config.set(f"slot_{slot_id}_{param_name}", value)
+        # 同步进 slot_N 嵌套字典（_load_config 读的是这个）
+        nested = self.config.get(f"slot_{slot_id}", {})
+        if isinstance(nested, dict):
+            nested[param_name] = value
+            self.config.set(f"slot_{slot_id}", nested)
         self.config.save()
 
     def _log(self, msg: str):
@@ -1024,7 +1079,7 @@ class ProductionPage(BasePage):
         流程：
         1. 更新 DetectionList 组件（显示检测到的物体列表）
         2. 更新 CameraView 组件（在预览画面上绘制检测框）
-        3. 通过 Manager 发送检测结果到 MQTT（ESP32 传送带会根据结果做分拣）
+        3. 通过 Manager 发送检测结果到 MQTT（主控传送带会根据结果做分拣）
 
         参数：
             slot_id: 槽位编号（1/2/3）
@@ -1045,11 +1100,11 @@ class ProductionPage(BasePage):
 
         # 2. 更新预览画面上的检测框（在 CameraView 上绘制矩形框 + 类别标签）
         self._slot_views[idx].update_detections(detections)
-        # 清空二维码结果显示（二维码结果在 _on_qr_results 中单独处理）
-        self._slot_views[idx].update_qr_results([])
+        # 注意：不在这里清空二维码图层——_on_detections 可能先于 _on_qr_results 触发，
+        # 清空会导致扫码框闪一下就没了。二维码图层由 _on_qr_results 单独更新。
 
         # 3. 通过 Manager 发送检测结果到 MQTT
-        #    Manager 会将结果格式化为 ESP32 能理解的协议格式
+        #    Manager 会将结果格式化为主控能理解的协议格式
         if self._manager:
             self._manager.send_detection_result(slot_id, detections, qr_bindings)
 
@@ -1088,6 +1143,13 @@ class ProductionPage(BasePage):
         # 执行匹配：将二维码绑定到检测框
         # 返回值是一个字典：{检测框索引: 二维码数据}
         self._slot_qr_bindings[idx] = match_qr_to_detections(qr_results, detections)
+
+        # 在预览画面上绘制二维码框和内容（无物体时也能看到扫码结果，方便调试）
+        self._slot_views[idx].update_qr_results(qr_results)
+
+        # 立即刷新检测列表，让二维码内容马上显示（否则要等下一帧 _on_detections）
+        if detections:
+            self._slot_lists[idx].update_detections(detections, self._slot_qr_bindings[idx])
 
     def _on_worker_error(self, slot_id: int, error: str):
         """
@@ -1161,7 +1223,7 @@ class ProductionPage(BasePage):
         """
         收到 MQTT 指令后的回调。
 
-        当 ESP32 传送带通过 MQTT 发送指令时（如 "xj1 1 1"），
+        当主控传送带通过 MQTT 发送指令时（如 "xj1 1 1"），
         Manager 会解析指令并发射 mqtt_cmd_received 信号，
         页面在这里将指令内容记录到通讯日志。
 
@@ -1177,7 +1239,7 @@ class ProductionPage(BasePage):
         """
         检测状态变化后的回调（MQTT 指令或按钮触发都走这里）。
 
-        当 ESP32 通过 MQTT 发送检测开关指令时（如 "xj1 1"），
+        当主控通过 MQTT 发送检测开关指令时（如 "xj1 1"），
         Manager 会启用/禁用对应槽位的检测，
         然后发射 detection_toggled 信号，页面在这里更新按钮状态。
 
@@ -1221,7 +1283,7 @@ class ProductionPage(BasePage):
         产线页面需要主动检查共享连接的状态。
 
         流程：
-        1. 获取全局共享的 ESP32 MQTT 实例
+        1. 获取全局共享的 MqttClient 实例
         2. 检查连接状态
         3. 更新 UI 指示灯（绿色=已连接，红色=未连接）
         4. 如果已连接，同步 Manager 的 MQTT 引用并设置指令回调
@@ -1230,7 +1292,7 @@ class ProductionPage(BasePage):
         避免每次轮询都重复设置。
         """
         # 获取全局共享的 MQTT 实例（所有页面共用同一个）
-        shared = get_shared_esp32()
+        shared = get_shared_mqtt()
         connected = shared.is_connected()
 
         # 更新 UI 状态指示灯
@@ -1262,7 +1324,7 @@ class ProductionPage(BasePage):
         连接 MQTT Broker（使用全局共享连接）。
 
         全局共享连接机制：
-        - 整个应用只有一个 ESP32 MQTT 实例（通过 get_shared_esp32() 获取）
+        - 整个应用只有一个 MqttClient 实例（通过 get_shared_mqtt() 获取）
         - 传送带页面和产线页面共用这个实例
         - 连接状态通过 is_connected() 检查
         - 断开连接通过 disconnect_shared() 执行
@@ -1281,7 +1343,7 @@ class ProductionPage(BasePage):
         返回：
             bool: 连接是否成功
         """
-        self._mqtt = get_shared_esp32()
+        self._mqtt = get_shared_mqtt()
 
         # 如果已经连接，直接设置回调并返回
         if self._mqtt.is_connected():
@@ -1295,17 +1357,32 @@ class ProductionPage(BasePage):
         ok = connect_shared(broker, port)
         if ok:
             # 连接成功
-            self._mqtt = get_shared_esp32()
+            self._mqtt = get_shared_mqtt()
             self._set_mqtt_status(True)
             self._manager._mqtt = self._mqtt
             self._mqtt.set_prod_cmd_callback(self._manager._parse_mqtt_cmd)
 
             # 如果有保存的模型路径且模型未加载，自动加载
+            # 失败时也要更新标签，不能停留在错误的"已加载"状态
             model_path = self.config.get("model_path", "")
-            if model_path and os.path.exists(model_path) and not self._manager.model_loaded:
-                self._manager.load_model(model_path)
-                self.lbl_model_path.setText(f"已加载: {os.path.basename(model_path)}")
-                self.lbl_model_path.setStyleSheet("color: #07C160; font-size: 11px;")
+            if model_path and not self._manager.model_loaded:
+                if not os.path.exists(model_path):
+                    self._log(f"模型文件不存在: {model_path}")
+                    self.lbl_model_path.setText(f"文件不存在: {os.path.basename(model_path)}")
+                    self.lbl_model_path.setStyleSheet("color: #e74c3c; font-size: 11px;")
+                else:
+                    try:
+                        ok = self._manager.load_model(model_path)
+                    except Exception as e:
+                        ok = False
+                        self._log(f"模型加载异常: {e}")
+                    if ok:
+                        self.lbl_model_path.setText(f"已加载: {os.path.basename(model_path)}")
+                        self.lbl_model_path.setStyleSheet("color: #07C160; font-size: 11px;")
+                    else:
+                        self._log(f"模型加载失败: {model_path}")
+                        self.lbl_model_path.setText(f"加载失败: {os.path.basename(model_path)}")
+                        self.lbl_model_path.setStyleSheet("color: #e74c3c; font-size: 11px;")
         else:
             # 连接失败
             self._set_mqtt_status(False)
@@ -1393,7 +1470,7 @@ class ProductionPage(BasePage):
         """
         # 1. 同步共享 MQTT 连接状态
         # 全局 MQTT 实例可能在传送带页面已连接，这里直接复用
-        shared = get_shared_esp32()
+        shared = get_shared_mqtt()
         if shared.is_connected():
             self._mqtt = shared
             self._set_mqtt_status(True)
@@ -1412,11 +1489,25 @@ class ProductionPage(BasePage):
 
         # 4. 自动加载已保存的模型
         model_path = self.config.get("model_path", "")
-        if model_path and os.path.exists(model_path) and not self._manager.model_loaded:
-            ok = self._manager.load_model(model_path)
-            if ok:
-                self.lbl_model_path.setText(f"已加载: {os.path.basename(model_path)}")
-                self.lbl_model_path.setStyleSheet("color: #07C160; font-size: 11px;")
+        if model_path and not self._manager.model_loaded:
+            if not os.path.exists(model_path):
+                # 文件不存在（如外置盘未挂载）→ 红色提示，不再假装已加载
+                self._log(f"模型文件不存在: {model_path}")
+                self.lbl_model_path.setText(f"文件不存在: {os.path.basename(model_path)}")
+                self.lbl_model_path.setStyleSheet("color: #e74c3c; font-size: 11px;")
+            else:
+                try:
+                    ok = self._manager.load_model(model_path)
+                except Exception as e:
+                    ok = False
+                    self._log(f"模型加载异常: {e}")
+                if ok:
+                    self.lbl_model_path.setText(f"已加载: {os.path.basename(model_path)}")
+                    self.lbl_model_path.setStyleSheet("color: #07C160; font-size: 11px;")
+                else:
+                    self._log(f"模型加载失败: {model_path}")
+                    self.lbl_model_path.setText(f"加载失败: {os.path.basename(model_path)}")
+                    self.lbl_model_path.setStyleSheet("color: #e74c3c; font-size: 11px;")
 
         # 5. 自动打开已保存的摄像头并预览（不启动检测）
         # 遍历 3 个槽位，如果配置了摄像头就自动打开
@@ -1515,10 +1606,19 @@ class ProductionPage(BasePage):
         }
         """
         # 加载模型路径
+        # 注意：不能只看配置里有没有路径就显示"已加载"，
+        # 必须以 manager.model_loaded 的真实状态为准，否则会出现
+        # 标签显示"已加载"但实际未加载的矛盾
         model_path = self.config.get("model_path", "")
         if model_path:
-            self.lbl_model_path.setText(f"已加载: {os.path.basename(model_path)}")
-            self.lbl_model_path.setStyleSheet("color: #07C160; font-size: 11px;")
+            if self._manager and self._manager.model_loaded:
+                # 模型确实已加载 → 绿色"已加载"
+                self.lbl_model_path.setText(f"已加载: {os.path.basename(model_path)}")
+                self.lbl_model_path.setStyleSheet("color: #07C160; font-size: 11px;")
+            else:
+                # 有保存路径但还没加载 → 灰色提示（on_show 会尝试自动加载）
+                self.lbl_model_path.setText(f"未加载: {os.path.basename(model_path)}（自动加载中...）")
+                self.lbl_model_path.setStyleSheet("color: #999; font-size: 11px;")
 
         # 加载各槽位参数
         for i in range(3):

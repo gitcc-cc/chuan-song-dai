@@ -102,6 +102,8 @@ class DepthWorker(QThread):
         self._rgb_frame = None     # 最新的 RGB 帧（OpenCV BGR 格式）
         self._depth_frame = None   # 最新的深度帧（NumPy uint16，单位毫米）
         self._frame_lock = QMutex()  # 帧缓存锁：防止同时读写导致的数据竞争
+        self._rgb_seq = 0          # RGB 帧序号：回调每收到新帧 +1，主循环据此判断是否有新帧
+        self._last_emit_ts = 0.0   # 上次发射预览帧的时间：用于节流，避免淹没 GUI
 
         # YOLO 推理参数
         self._conf_threshold = 0.5    # 置信度阈值：低于此值的检测结果会被过滤
@@ -193,6 +195,17 @@ class DepthWorker(QThread):
         """
         self._mutex.lock()
         self._qr_interval = max(1, interval)  # 至少为 1
+
+    def set_qr_slice(self, slice_ms: int, fp_thresh: float = None):
+        """
+        设置 v1.2 渐进式搜索的时间片（v1.2 已并入 QRDecoder）
+
+        参数：
+            slice_ms: 时间片毫秒数。0=关闭（v1.1 原行为）；600=启用时间片+
+                      搜索游标+帧指纹门（单次最坏 ~1s，跨帧续搜）
+            fp_thresh: 指纹门阈值（仅 slice_ms>0 生效），None=保持当前值
+        """
+        self._qr_decoder.set_slice(slice_ms, fp_thresh)
         self._mutex.unlock()
 
     def enable_inference(self):
@@ -245,6 +258,7 @@ class DepthWorker(QThread):
             frame = self._bridge.imgmsg_to_cv2(msg, "bgr8")
             self._frame_lock.lock()
             self._rgb_frame = frame  # 更新 RGB 帧缓存
+            self._rgb_seq += 1       # 帧序号 +1：主循环据此判断是否收到新帧
             self._frame_lock.unlock()
         except Exception:
             pass  # 转换失败时静默处理，可能帧格式不匹配
@@ -285,31 +299,25 @@ class DepthWorker(QThread):
     # ============ 深度值读取 ============
 
     @staticmethod
-    def read_depth_center(depth_frame: np.ndarray, bbox: list) -> int:
+    def read_depth_center(depth_frame: np.ndarray, bbox: list,
+                          rgb_shape=None) -> int:
         """
         读取检测框中心点的深度值（毫米）
 
         原理：
             YOLO 检测返回的边界框 (bbox) 定义了目标在 RGB 图像中的位置。
-            深度图像和 RGB 图像是对齐的（同一坐标系），所以可以直接读取
-            边界框中心点在深度图像中的值，得到目标的深度（距离）。
+            深度图和 RGB 图分辨率可能不同（如 RGB 1920x1080、深度 640x480），
+            需要把 RGB 坐标按比例缩放到深度图坐标后再取值。
 
         参数：
             depth_frame: 深度图像（NumPy 数组，uint16 格式，单位毫米）
-            bbox: 边界框坐标 [x1, y1, x2, y2]（左上角 x,y 和右下角 x,y）
+            bbox: 边界框坐标 [x1, y1, x2, y2]（RGB 图坐标系）
+            rgb_shape: RGB 图的 shape (H, W, C) 或 (H, W)；
+                       为 None 时认为与深度图同分辨率（旧行为）
 
         返回值：
             int: 深度值（毫米），有效范围约 0-1500mm
             int: -1 表示无效（深度帧为空、边界框无效、坐标越界、深度值为0）
-
-        使用场景：
-            在 YOLO 检测完成后调用，为每个检测结果添加深度信息。
-            例如：det["depth_mm"] = DepthWorker.read_depth_center(depth, det["bbox"])
-
-        深度值精度：
-            - 原始值是 uint16，精度为 1mm
-            - 如果深度帧是 float 格式（米），会自动转换为毫米
-            - 0 值通常表示无效/超出量程
         """
         # 检查输入有效性
         if depth_frame is None or len(bbox) != 4:
@@ -318,13 +326,20 @@ class DepthWorker(QThread):
         # 解析边界框坐标并转换为整数（像素坐标必须是整数）
         x1, y1, x2, y2 = [int(v) for v in bbox]
 
-        # 计算边界框中心点坐标
-        # 中心点 = (左上角 + 右下角) / 2
-        cx = (x1 + x2) // 2  # 中心点 x 坐标
-        cy = (y1 + y2) // 2  # 中心点 y 坐标
+        # 计算边界框中心点坐标（RGB 图坐标系）
+        cx = (x1 + x2) // 2
+        cy = (y1 + y2) // 2
 
         # 获取深度图像尺寸（高度 h，宽度 w）
         h, w = depth_frame.shape[:2]
+
+        # RGB 与深度分辨率不同时，按比例缩放坐标
+        # 例：RGB 1920x1080、深度 640x480 → cx *= 640/1920, cy *= 480/1080
+        if rgb_shape is not None:
+            rh, rw = int(rgb_shape[0]), int(rgb_shape[1])
+            if rw > 0 and rh > 0 and (rw != w or rh != h):
+                cx = int(cx * w / rw)
+                cy = int(cy * h / rh)
 
         # 边界检查：确保中心点在深度图像范围内
         if not (0 <= cy < h and 0 <= cx < w):
@@ -477,6 +492,7 @@ class DepthWorker(QThread):
         self._node.get_logger().info("DepthWorker 订阅已建立")
 
         last_print = 0  # 上次打印日志的时间
+        last_rgb_seq = -1  # 上次处理的 RGB 帧序号：用于跳过重复帧
 
         # 主循环：持续处理帧，直到 _running 被设为 False
         while True:
@@ -500,10 +516,12 @@ class DepthWorker(QThread):
             rclpy.spin_once(self._node, timeout_sec=0.001)
 
             # 获取最新的 RGB 和深度帧（线程安全）
-            # 使用 copy() 创建副本，防止回调函数同时修改帧数据
+            # 只取引用不 copy：回调是整体替换 self._rgb_frame（新对象），
+            # 旧帧对象不会被原地修改，持有引用是安全的
             self._frame_lock.lock()
-            rgb = self._rgb_frame.copy() if self._rgb_frame is not None else None
-            depth = self._depth_frame.copy() if self._depth_frame is not None else None
+            rgb = self._rgb_frame
+            depth = self._depth_frame
+            rgb_seq = self._rgb_seq
             self._frame_lock.unlock()
 
             # 如果还没有收到帧，等待一段时间再重试
@@ -511,13 +529,21 @@ class DepthWorker(QThread):
                 time.sleep(0.01)  # 等待 10 毫秒
                 continue  # 跳过本次循环，继续下一次
 
+            # 关键优化：没有新帧就跳过（否则会把同一帧反复 emit，淹没 GUI 事件队列）
+            if rgb_seq == last_rgb_seq:
+                time.sleep(0.005)  # 等 5ms 再查，避免空转
+                continue
+            last_rgb_seq = rgb_seq
+
             # 帧计数器加 1
             self._frame_count += 1
 
-            # 发射 RGB 和深度帧到主线程
-            # 使用 copy() 确保主线程收到的是独立副本
-            self.frame_ready.emit(rgb.copy())
-            self.depth_frame_ready.emit(depth.copy())
+            # 发射 RGB 和深度帧到主线程（节流：最多 ~20 FPS，避免 GUI 事件队列堆积）
+            now_ts = time.perf_counter()
+            if now_ts - self._last_emit_ts >= 0.05:  # 50ms = 20fps 上限
+                self.frame_ready.emit(rgb)
+                self.depth_frame_ready.emit(depth)
+                self._last_emit_ts = now_ts
 
             # YOLO 推理逻辑
             # should_infer: 是否应该在这一帧进行推理
@@ -536,10 +562,10 @@ class DepthWorker(QThread):
 
                 # 为每个检测结果添加深度值
                 # YOLO 只检测 RGB 图像，不包含深度信息
-                # 我们需要从深度图像中读取每个检测框中心点的深度值
+                # bbox 在 RGB 坐标系，read_depth_center 会按 RGB/深度分辨率比例缩放
                 for det in detections:
                     bbox = det.get("bbox", [])  # 获取边界框坐标 [x1, y1, x2, y2]
-                    det["depth_mm"] = self.read_depth_center(depth, bbox)  # 添加深度值
+                    det["depth_mm"] = self.read_depth_center(depth, bbox, rgb.shape)
 
                 # 保存最近一次检测结果（供 QR 解码匹配使用）
                 self._last_detections = detections
@@ -547,11 +573,11 @@ class DepthWorker(QThread):
                 # 发射检测结果到主线程
                 self.detections_ready.emit(detections)
 
-                # 二维码解码（可选）
-                # 只有在启用 QR 且帧计数是 QR 间隔的倍数时才执行
+                # 二维码解码（可选）：有检测框时优先 ROI 裁剪放大解码，失败再整帧
                 if qr_enabled and self._frame_count % qr_interval == 0:
-                    qr_results = self._qr_decoder.decode(rgb)  # 解码 RGB 图像中的二维码
-                    self.qr_results_ready.emit(qr_results)  # 发射解码结果
+                    rois = [d.get("bbox") for d in detections if d.get("bbox")]
+                    qr_results = self._qr_decoder.decode(rgb, rois=rois)
+                    self.qr_results_ready.emit(qr_results)
 
             # 计算 FPS（每秒帧数）
             # 使用最近 1 秒内的时间戳数量来估算 FPS

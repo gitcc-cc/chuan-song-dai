@@ -22,6 +22,8 @@
 - 结束时调用 cleanup() 释放所有资源
 """
 import os
+import subprocess
+import time
 from typing import Optional, Callable
 
 from PyQt6.QtCore import QObject, pyqtSignal, QThread
@@ -30,7 +32,48 @@ from vision.detector import Detector          # 检测器：封装 YOLO 模型�
 from vision.worker import InferenceWorker    # 推理 Worker：普通摄像头模式下的检测线程
 from vision.depth_worker import DepthWorker  # 深度 Worker：深度相机模式下的检测线程
 from vision.camera import OpenCVCamera, BaseCamera  # 摄像头：OpenCVCamera 为普通摄像头，BaseCamera 为基类
-from core.esp32_lib import ESP32             # ESP32 通信库：用于 MQTT 通信
+from core.mqtt_client import MqttClient       # 主控通信库：用于 MQTT 通信
+
+# 相机 ROS2 launch 包/文件名（写死，避免拼接注入）
+_CAM_PKG = "ascamera"
+_CAM_LAUNCH = "hp60c.launch.py"
+_CAM_LOG = "/tmp/hp60c_camera.log"
+_ROS_SETUP = "/opt/ros/humble/setup.bash"
+
+
+def restart_camera_node() -> None:
+    """
+    手动重启深度相机 ROS2 节点（拔插相机后用）。
+    流程：杀 launch/node → 等 3s 释放 UVC → 重新 launch → 等 8s 出流。
+    同步阻塞约 11 秒，调用方应在 QThread 里执行。
+    """
+    # 杀干净旧进程（只杀 launch 会残留 ascamera_node 占着 UVC）
+    subprocess.run(["pkill", "-f", "hp60c.launch.py"],
+                   capture_output=True, check=False)
+    subprocess.run(["pkill", "-f", "ascamera_node"],
+                   capture_output=True, check=False)
+    time.sleep(3)  # 等 UVC 设备释放
+
+    # 重新启动（shell 里 source ROS 环境后后台拉起，日志追加）
+    cmd = (
+        f'source {_ROS_SETUP} && '
+        f'setsid ros2 launch {_CAM_PKG} {_CAM_LAUNCH} >> {_CAM_LOG} 2>&1 &'
+    )
+    subprocess.Popen(cmd, shell=True, executable="/bin/bash",
+                     start_new_session=True)
+    time.sleep(8)  # 等相机初始化出流
+
+
+class RestartCameraThread(QThread):
+    """后台重启相机节点，不阻塞 UI。"""
+    done = pyqtSignal(bool, str)  # (success, message)
+
+    def run(self):
+        try:
+            restart_camera_node()
+            self.done.emit(True, "已重启")
+        except Exception as e:
+            self.done.emit(False, f"失败: {e}")
 
 
 class SlotCameraOpenThread(QThread):
@@ -64,7 +107,8 @@ class SlotCameraOpenThread(QThread):
         线程执行体：尝试打开摄像头
         这个方法在新线程中执行，不会阻塞主线程
         """
-        ok = self._camera.open(self._camera_index)
+        # 优先 720p；不支持时 OpenCVCamera.open() 内部回退设备默认分辨率
+        ok = self._camera.open(self._camera_index, width=1280, height=720, fps=30)
         if ok:
             # 打开成功，发射 opened 信号，传递槽位ID和摄像头对象
             self.opened.emit(self._slot_id, self._camera)
@@ -100,15 +144,15 @@ class ProductionManager(QObject):
     SLOT_COUNT = 3  # 总槽位数
     SLOT_MAP = {"xj1": 0, "xj2": 1, "xj3": 2}  # MQTT指令中的槽位名称到索引的映射
 
-    def __init__(self, mqtt_client: Optional[ESP32] = None):
+    def __init__(self, mqtt_client: Optional[MqttClient] = None):
         """
         初始化产线管理器
         参数：
-            mqtt_client: ESP32 MQTT客户端实例，用于接收指令和发送结果
+            mqtt_client: MqttClient 实例，用于接收指令和发送结果
                        如果为None，则不处理MQTT通信
         """
         super().__init__()
-        self._mqtt: Optional[ESP32] = mqtt_client  # MQTT客户端引用
+        self._mqtt: Optional[MqttClient] = mqtt_client  # MQTT客户端引用
         self._model = None          # YOLO model 实例（共享）- 三个槽位共用同一个模型
         self._model_loaded = False  # 模型是否已加载
         self._model_path = ""       # 模型文件路径
@@ -154,6 +198,15 @@ class ProductionManager(QObject):
         try:
             from ultralytics import YOLO
             self._model = YOLO(model_path)  # 加载YOLO模型
+
+            # 强制使用 GPU（如果可用），避免静默回退到 CPU
+            import torch
+            if torch.cuda.is_available():
+                self._model.to("cuda:0")
+                print("[ProductionManager] YOLO 已加载到 GPU: cuda:0")
+            else:
+                print("[ProductionManager] 警告: CUDA 不可用，YOLO 使用 CPU")
+
             self._model_path = model_path
             self._model_loaded = True
 
@@ -189,8 +242,8 @@ class ProductionManager(QObject):
             params: 检测参数字典，包含：
                 - conf: 置信度阈值（0-1），默认0.5
                 - iou: IOU阈值（0-1），默认0.45
-                - inference_interval: 推理间隔（秒），默认1
-                - qr_interval: 扫码间隔（秒），默认1
+                - inference_interval: 推理间隔（帧），默认1
+                - qr_interval: 扫码间隔（帧），默认1
         
         返回：
             bool: 启动成功返回True，失败返回False
@@ -264,6 +317,7 @@ class ProductionManager(QObject):
         )
         worker.set_inference_interval(params.get("inference_interval", 1))  # 推理间隔
         worker.set_qr_interval(params.get("qr_interval", 1))                # 扫码间隔
+        worker.set_qr_slice(params.get("qr_slice_ms", 600))   # v1.2 时间片(缺省600=qr_decoder._DEFAULT_SLICE_MS；配置显式 0=旧行为)
         worker.set_qr_enabled(False)         # 初始禁用扫码
         worker.disable_inference()           # 初始禁用检测，只显示预览
 
@@ -301,8 +355,8 @@ class ProductionManager(QObject):
             params: 检测参数字典，包含：
                 - conf: 置信度阈值（0-1），默认0.5
                 - iou: IOU阈值（0-1），默认0.45
-                - inference_interval: 推理间隔（秒），默认1
-                - qr_interval: 扫码间隔（秒），默认1
+                - inference_interval: 推理间隔（帧），默认1
+                - qr_interval: 扫码间隔（帧），默认1
         
         返回：
             bool: 启动成功返回True，失败返回False
@@ -338,6 +392,7 @@ class ProductionManager(QObject):
         )
         worker.set_inference_interval(params.get("inference_interval", 1))  # 推理间隔
         worker.set_qr_interval(params.get("qr_interval", 1))                # 扫码间隔
+        worker.set_qr_slice(params.get("qr_slice_ms", 600))   # v1.2 时间片(缺省600=qr_decoder._DEFAULT_SLICE_MS；配置显式 0=旧行为)
         worker.set_qr_enabled(False)         # 初始禁用扫码
         worker.disable_inference()           # 初始禁用检测
 
@@ -427,16 +482,12 @@ class ProductionManager(QObject):
         3. 关闭摄像头（如果存在）
         4. 清理检测器引用
         5. 重置运行状态和深度模式标志
-        
-        注意：这个方法会打印调用栈，方便调试时查看是谁调用了停止
         """
-        import traceback
         idx = slot_id - 1
         if idx < 0 or idx >= self.SLOT_COUNT:
             return
 
         print(f"[ProductionManager] 槽位{slot_id} 停止")
-        traceback.print_stack(limit=5)  # 打印调用栈，便于调试
 
         # 停止普通Worker：调用stop方法，然后置为None释放资源
         if self._workers[idx]:
@@ -488,9 +539,9 @@ class ProductionManager(QObject):
             params: 要更新的参数字典，包含以下可选键：
                 - conf: 置信度阈值（0-1）
                 - iou: IOU阈值（0-1）
-                - inference_interval: 推理间隔（秒）
-                - qr_interval: 扫码间隔（秒）
-        
+                - inference_interval: 推理间隔（帧）
+                - qr_interval: 扫码间隔（帧）
+
         注意：只更新params中包含的参数，其他参数保持不变
         """
         idx = slot_id - 1
@@ -508,6 +559,8 @@ class ProductionManager(QObject):
                 worker.set_inference_interval(int(params["inference_interval"]))  # 更新推理间隔
             if "qr_interval" in params:
                 worker.set_qr_interval(int(params["qr_interval"]))  # 更新扫码间隔
+            if "qr_slice_ms" in params:
+                worker.set_qr_slice(int(params["qr_slice_ms"]))  # 更新 v1.2 时间片
 
         # 更新深度Worker的参数
         depth_worker = self._depth_workers[idx]
@@ -520,6 +573,8 @@ class ProductionManager(QObject):
                 depth_worker.set_inference_interval(int(params["inference_interval"]))  # 更新推理间隔
             if "qr_interval" in params:
                 depth_worker.set_qr_interval(int(params["qr_interval"]))  # 更新扫码间隔
+            if "qr_slice_ms" in params:
+                depth_worker.set_qr_slice(int(params["qr_slice_ms"]))  # 更新 v1.2 时间片
 
     # ============ 检测结果处理 ============
     def _on_slot_detections(self, slot_id: int, detections: list):
@@ -620,7 +675,7 @@ class ProductionManager(QObject):
     def _parse_mqtt_cmd(self, payload: str):
         """
         解析来自 ht/cmd/2 的 MQTT 指令
-        这个方法由ESP32客户端的prod_cmd回调触发
+        这个方法由 MqttClient 的 prod_cmd 回调触发
         
         指令格式："<槽位> <检测开关> <扫码开关>"
         示例：

@@ -536,24 +536,35 @@ class OpenCVCamera(BaseCamera):
             # 先获取摄像头原生分辨率
             native_w = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             native_h = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            
+
             # 如果用户指定了分辨率，尝试设置
             if width > 0 and height > 0 and (width != native_w or height != native_h):
                 print(f"[OpenCVCamera] 尝试设置分辨率 {width}x{height} (原生: {native_w}x{native_h})...")
-                # 设置新的分辨率
+                # 720p 及以上优先 MJPG：YUYV 带宽大，很多 USB 摄像头
+                # 在 YUYV 下给不出 720p，MJPG 才是标称最高档
+                if width >= 1280:
+                    fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+                    self._cap.set(cv2.CAP_PROP_FOURCC, fourcc)
+
+                # 先宽后高；部分驱动对顺序敏感
                 self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
                 self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-                
-                # 验证设置是否成功（读取一帧检查）
+
+                # 验证：必须能读帧，且实际分辨率等于请求值
                 ret, frame = self._cap.read()
-                if not ret or frame is None or frame.size == 0:
-                    # 设置失败，恢复原生分辨率
-                    print(f"[OpenCVCamera] 设置分辨率失败，回退原生分辨率")
+                actual_w = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                actual_h = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                if (ret and frame is not None and frame.size > 0
+                        and actual_w == width and actual_h == height):
+                    print(f"[OpenCVCamera] 分辨率设置成功: {actual_w}x{actual_h}")
+                else:
+                    # 设置失败或驱动 silently 保持旧分辨率 → 回退默认，
+                    # 不能假装成功（否则 UI 显示 720p 实际 480p）
+                    print(f"[OpenCVCamera] 分辨率设置失败 "
+                          f"(实际 {actual_w}x{actual_h}，期望 {width}x{height})，回退默认")
                     self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, -1)
                     self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, -1)
-                else:
-                    print(f"[OpenCVCamera] 分辨率设置成功: {frame.shape[1]}x{frame.shape[0]}")
-            
+
             # 设置帧率（如果指定）
             if fps > 0:
                 self._cap.set(cv2.CAP_PROP_FPS, fps)

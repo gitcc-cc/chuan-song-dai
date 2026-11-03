@@ -129,8 +129,7 @@ class CameraView(QLabel):
         按顺序绘制：背景 → 画面 → YOLO检测框 → 二维码框 → FPS信息
         """
         painter = QPainter(self)
-        # 启用抗锯齿和光滑像素变换，提升绘制质量
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # 视频预览不需要抗锯齿（只会增加每帧开销），只保留像素平滑缩放
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
 
         # 绘制深色背景（RGB 26,26,26）
@@ -144,11 +143,12 @@ class CameraView(QLabel):
                            "等待摄像头画面...")
             return
 
-        # 1) 将OpenCV的BGR格式转换为Qt的RGB格式
-        h, w, ch = self._frame.shape  # 获取帧的高、宽、通道数
-        bytes_per_line = ch * w  # 计算每行字节数
-        rgb_frame = self._frame[:, :, ::-1].copy()  # BGR转RGB（通道反转）
-        # 创建QImage，注意内存对齐
+        # 1) BGR → RGB：用 cv2（C 实现）比 numpy 切片 + copy 快
+        #    QImage 只在本次 paint 中引用数据，QPixmap.fromImage 会立即拷贝，无需额外 copy
+        import cv2
+        rgb_frame = cv2.cvtColor(self._frame, cv2.COLOR_BGR2RGB)
+        h, w, ch = rgb_frame.shape
+        bytes_per_line = ch * w
         qimg = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
 
         # 2) 计算保持比例的显示矩形（居中显示）

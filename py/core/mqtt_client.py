@@ -1,12 +1,12 @@
 """
-esp32_lib.py - ESP32 MQTT 通信封装库
+mqtt_client.py - 主控 MQTT 通信封装库
 
-本文件封装了与 ESP32 通过 MQTT 协议通信的所有功能。
+本文件封装了与 主控 通过 MQTT 协议通信的所有功能。
 
 主要职责：
 1. 连接/断开 MQTT Broker（消息代理服务器）
-2. 订阅指定主题，接收 ESP32 发来的状态消息
-3. 向 ESP32 发送控制命令（传送带、舵机等）
+2. 订阅指定主题，接收 主控 发来的状态消息
+3. 向 主控 发送控制命令（传送带、舵机等）
 4. 支持产线控制模式的双向通信（命令 + 检测结果）
 5. 提供线程安全的状态管理
 
@@ -29,11 +29,11 @@ import threading
 import time
 
 
-class ESP32:
+class MqttClient:
     """
-    ESP32 MQTT 通信客户端类
+    主控 MQTT 通信客户端类
 
-    该类封装了与 ESP32 设备通信的所有 MQTT 操作。
+    该类封装了与主控通信的所有 MQTT 操作。
     支持两种工作模式：
     1. 传送带控制模式（topic_cmd/topic_sta）：发送电机命令，接收状态
     2. 产线控制模式（topic_cmd2/topic_sta2）：接收产线指令，发送检测结果
@@ -46,7 +46,7 @@ class ESP32:
 
     def __init__(self, broker='127.0.0.1', port=1883):
         """
-        初始化 ESP32 客户端实例
+        初始化 主控 客户端实例
 
         参数：
             broker (str): MQTT 服务器地址，默认 '127.0.0.1'（本机）
@@ -62,12 +62,12 @@ class ESP32:
 
         # MQTT 主题配置（topic 是消息的"地址"，类似频道号）
         # cmd = command（命令），sta = status（状态）
-        self.topic_cmd = 'ht/cmd/1'      # 传送带控制命令：GUI → ESP32
-        self.topic_sta = 'ht/status/1'   # 传送带状态：ESP32 → GUI
-        self.topic_cmd2 = 'ht/cmd/2'     # 产线控制指令：ESP32 → GUI
-        self.topic_sta2 = 'ht/status/2'  # 产线检测结果：GUI → ESP32
+        self.topic_cmd = 'ht/cmd/1'      # 传送带控制命令：GUI → 主控
+        self.topic_sta = 'ht/status/1'   # 传送带状态：主控 → GUI
+        self.topic_cmd2 = 'ht/cmd/2'     # 产线控制指令：主控 → GUI
+        self.topic_sta2 = 'ht/status/2'  # 产线检测结果：GUI → 主控
 
-        # 缓存 ESP32 最后一次发送的状态（JSON 格式）
+        # 缓存 主控 最后一次发送的状态（JSON 格式）
         self._last_status = None
 
         # 线程锁：保证多线程环境下读写 _last_status 的安全
@@ -187,8 +187,8 @@ class ESP32:
             self._event.set()
 
             # 订阅主题：只有订阅了某个主题，才能收到该主题的消息
-            # topic_sta: 传送带状态（ESP32 → GUI）
-            # topic_cmd2: 产线控制指令（ESP32 → GUI）
+            # topic_sta: 传送带状态（主控 → GUI）
+            # topic_cmd2: 产线控制指令（主控 → GUI）
             client.subscribe(self.topic_sta)
             client.subscribe(self.topic_cmd2)
 
@@ -292,7 +292,7 @@ class ESP32:
 
     def send(self, cmd, timeout=3):
         """
-        向 ESP32 发送控制命令
+        向 主控 发送控制命令
 
         参数：
             cmd (str): 要发送的命令字符串
@@ -305,7 +305,7 @@ class ESP32:
                 - None: 发送失败（未连接或超时）
 
         支持的命令：
-            - 'status': 查询 ESP32 状态
+            - 'status': 查询 主控 状态
             - 'dj 0': 停止电机
             - 'dj 1': 正转
             - 'dj 2': 反转
@@ -327,7 +327,7 @@ class ESP32:
         # publish() 是非阻塞的，消息会在后台发送
         self.client.publish(self.topic_cmd, cmd)
 
-        # 如果是查询状态的命令，需要等待 ESP32 回复
+        # 如果是查询状态的命令，需要等待 主控 回复
         if cmd == 'status':
             # 记录发送前的状态快照，用于检测是否收到新状态
             old = self._last_status
@@ -353,7 +353,7 @@ class ESP32:
 
     def status(self):
         """
-        查询 ESP32 当前状态（便捷方法）
+        查询 主控 当前状态（便捷方法）
 
         参数：无
         返回：
@@ -402,12 +402,12 @@ class ESP32:
         参数：
             callback (callable): 回调函数，签名如下：
                 def callback(payload_str: str) -> None
-                - payload_str: ESP32 发来的指令字符串，如 "xj1 1 1"
+                - payload_str: 主控 发来的指令字符串，如 "xj1 1 1"
 
         返回：无
 
         说明：
-            当收到 ESP32 发来的产线控制指令时，会调用此回调函数。
+            当收到 主控 发来的产线控制指令时，会调用此回调函数。
             常见指令格式："<槽位> <检测> <扫码>"
             例如："xj1 1 1" 表示槽位1 开启检测和扫码
 
@@ -415,13 +415,13 @@ class ESP32:
             def handle_cmd(payload):
                 print(f"收到指令: {payload}")
 
-            esp32.set_prod_cmd_callback(handle_cmd)
+            client.set_prod_cmd_callback(handle_cmd)
         """
         self._prod_cmd_callback = callback
 
     def send_prod_result(self, slot_id: int, detections: list):
         """
-        发送产线检测结果到 ESP32
+        发送产线检测结果到 主控
 
         参数：
             slot_id (int): 槽位编号（1、2 或 3）
@@ -438,7 +438,7 @@ class ESP32:
 
         说明：
             检测结果会以 JSON 格式发送到 topic_sta2 主题，
-            ESP32 收到后会根据结果控制舵机分拣。
+            主控 收到后会根据结果控制舵机分拣。
 
         注意：
             - 未连接时直接返回，不发送
@@ -469,7 +469,7 @@ class ESP32:
         返回：str 或 None（同 send()）
 
         说明：
-            发送命令 'dj 1'，ESP32 收到后电机正转
+            发送命令 'dj 1'，主控 收到后电机正转
             正转方向：物体从上料端流向分拣端
         """
         return self.send('dj 1')
@@ -482,7 +482,7 @@ class ESP32:
         返回：str 或 None（同 send()）
 
         说明：
-            发送命令 'dj 2'，ESP32 收到后电机反转
+            发送命令 'dj 2'，主控 收到后电机反转
             反转方向：物体从分拣端流向上料端
         """
         return self.send('dj 2')
@@ -495,7 +495,7 @@ class ESP32:
         返回：str 或 None（同 send()）
 
         说明：
-            发送命令 'dj 0'，ESP32 收到后停止电机
+            发送命令 'dj 0'，主控 收到后停止电机
         """
         return self.send('dj 0')
 
@@ -507,7 +507,7 @@ class ESP32:
         返回：str 或 None（同 send()）
 
         说明：
-            发送命令 'dj 3'，ESP32 切换到自动模式
+            发送命令 'dj 3'，主控 切换到自动模式
             自动模式下，光纤传感器检测到物体时自动停止
         """
         return self.send('dj 3')
@@ -525,7 +525,7 @@ class ESP32:
         返回：str 或 None（同 send()）
 
         说明：
-            发送命令 'speed N'，ESP32 收到后调整电机速度
+            发送命令 'speed N'，主控 收到后调整电机速度
             速度值会被自动限制在 0-13 范围内
         """
         # 确保速度值在 0-13 范围内
@@ -594,7 +594,7 @@ class ESP32:
         返回：str 或 None（同 send()）
 
         说明：
-            发送命令 'hello'，用于测试 ESP32 是否正常响应
+            发送命令 'hello'，用于测试 主控 是否正常响应
             如果返回 'ok'，说明通信正常
         """
         return self.send('hello')

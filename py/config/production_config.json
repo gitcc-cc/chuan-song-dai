@@ -6,17 +6,17 @@
   "window_geometry": null,
   "sidebar_expanded": true,
   "slot_1": {
-    "camera_index": -1,
+    "camera_index": 2,
     "conf": 0.89,
     "iou": 0.45,
-    "inference_interval": 1,
-    "qr_interval": 1
+    "inference_interval": 9,
+    "qr_interval": 9
   },
   "slot_2": {
     "camera_index": -1,
-    "conf": 0.5,
-    "iou": 0.45,
-    "inference_interval": 1,
+    "conf": 0.41,
+    "iou": 0.46,
+    "inference_interval": 20,
     "qr_interval": 1
   },
   "slot_3": {
@@ -26,7 +26,12 @@
     "inference_interval": 1,
     "qr_interval": 1
   },
-  "slot_2_conf": 0.42,
+  "slot_2_conf": 0.41,
   "slot_3_conf": 0.45,
-  "slot_1_conf": 0.89
+  "slot_1_conf": 0.89,
+  "slot_2_iou": 0.46,
+  "slot_2_inference_interval": 20.0,
+  "slot_2_qr_interval": 1.0,
+  "slot_1_inference_interval": 9.0,
+  "slot_1_qr_interval": 9.0
 }

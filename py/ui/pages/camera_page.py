@@ -142,8 +142,8 @@ class CameraOpenThread(QThread):
         注意：此方法在子线程中执行，不能直接操作 UI 控件！
         只能通过信号（emit）通知主线程更新界面。
         """
-        # 调用 OpenCV 打开摄像头，width/height/fps=-1 表示使用默认值
-        ok = self._camera.open(self._index, width=-1, height=-1, fps=-1)
+        # 优先 720p（外接 HD 720P Webcam 支持 1280x720@30）；失败时 open() 内部回退默认
+        ok = self._camera.open(self._index, width=1280, height=720, fps=30)
         if ok:
             # 获取实际分辨率（摄像头可能不支持请求的分辨率）
             w, h = self._camera.get_resolution()
@@ -329,7 +329,9 @@ class CameraPage(BasePage):
         # 扫码间隔：每隔多少帧做一次二维码扫描（跟随检测触发）
         self.slider_qr_interval = ParamSlider("扫码间隔（帧）", 1, 30,
                                               default=1, step=1, decimals=0)
-        self.slider_qr_interval.setToolTip("跟随检测触发，1=每次检测都扫码")
+        self.slider_qr_interval.setToolTip(
+            "每读满 N 帧触发一次解码（单位=帧，不是取帧间隔，1=每次都解）。\n"
+            "停带扫码时调小出结果更快；解码瞬间预览会短暂顿一下")
         self.slider_qr_interval.value_changed.connect(self._on_qr_interval_changed)
         param_layout.addWidget(self.slider_qr_interval)
 
@@ -1230,7 +1232,7 @@ class CameraPage(BasePage):
         - IoU 阈值
         - 推理间隔
         - 扫码间隔
-        
+
         摄像头索引和模型路径在使用时已实时保存，这里不需要再保存。
         """
         self.config.set("conf_threshold", self.slider_conf.get_value())

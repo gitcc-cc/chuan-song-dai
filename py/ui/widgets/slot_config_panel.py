@@ -13,7 +13,7 @@
 """
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
-    QComboBox, QLabel, QCheckBox
+    QComboBox, QLabel, QCheckBox, QPushButton
 )
 from PyQt6.QtCore import pyqtSignal
 
@@ -30,6 +30,7 @@ class SlotConfigPanel(QWidget):
     camera_changed = pyqtSignal(int, int)    # 摄像头变更信号：(槽位ID, 摄像头索引)
     param_changed = pyqtSignal(int, str, float)  # 参数变更信号：(槽位ID, 参数名, 参数值)
     depth_mode_changed = pyqtSignal(int, bool)   # 深度模式变更信号：(槽位ID, 是否启用)
+    restart_camera_clicked = pyqtSignal(int)     # 手动重启相机节点：(槽位ID)
 
     # 面板样式定义（QGroupBox和QComboBox的样式）
     _STYLE = """
@@ -88,14 +89,24 @@ class SlotConfigPanel(QWidget):
         cam_row.addWidget(self.cam_combo, stretch=1)  # 拉伸填充
         group_layout.addLayout(cam_row)
 
-        # 深度相机模式复选框（仅1号槽位显示）
+        # 深度相机模式复选框 + 手动重启按钮（仅1号槽位显示）
+        depth_row = QHBoxLayout()
         self._depth_check = QCheckBox("深度相机 (HP60C)")
         self._depth_check.setToolTip("启用后通过 ROS2 订阅 HP60C 深度相机\n彩色图 + 深度图，检测框中心显示深度值")
         # 只有1号槽位显示深度相机选项
         self._depth_check.setVisible(self._slot_id == 1)
         # 连接复选框状态变更信号
         self._depth_check.toggled.connect(self._on_depth_mode_changed)
-        group_layout.addWidget(self._depth_check)
+        depth_row.addWidget(self._depth_check)
+
+        # 手动重启相机节点（运行中拔插后用，无自动重连）
+        self.btn_restart_cam = QPushButton("重启相机")
+        self.btn_restart_cam.setToolTip("拔插深度相机后手动重启 ROS2 相机节点\n（约 11 秒，期间预览会中断）")
+        self.btn_restart_cam.setVisible(self._slot_id == 1)
+        self.btn_restart_cam.clicked.connect(self._on_restart_camera_clicked)
+        depth_row.addWidget(self.btn_restart_cam)
+        depth_row.addStretch()
+        group_layout.addLayout(depth_row)
 
         # 置信度滑块（0.0-1.0，默认0.5，步长0.01）
         self.slider_conf = ParamSlider("置信度", 0.0, 1.0,
@@ -121,7 +132,9 @@ class SlotConfigPanel(QWidget):
 
         # 扫码间隔滑块（1-30帧，默认1，即每次检测都扫码）
         self.slider_qr_interval = IntParamSlider("扫码间隔", 1, 30, default=1, unit="帧")
-        self.slider_qr_interval.setToolTip("跟随检测触发，1=每次检测都扫码")
+        self.slider_qr_interval.setToolTip(
+            "每读满 N 帧触发一次解码（单位=帧，不是取帧间隔，1=每次都解）。\n"
+            "停带扫码时调小出结果更快；解码瞬间预览会短暂顿一下")
         self.slider_qr_interval.value_changed.connect(
             lambda v: self.param_changed.emit(self._slot_id, "qr_interval", float(v)))
         group_layout.addWidget(self.slider_qr_interval)
@@ -144,6 +157,18 @@ class SlotConfigPanel(QWidget):
         self.cam_combo.setEnabled(not checked)
         # 发射深度模式变更信号
         self.depth_mode_changed.emit(self._slot_id, checked)
+
+    def _on_restart_camera_clicked(self):
+        """点击「重启相机」按钮"""
+        self.restart_camera_clicked.emit(self._slot_id)
+
+    def set_restart_enabled(self, enabled: bool):
+        """启用/禁用重启按钮（重启过程中禁用，防重复点击）"""
+        self.btn_restart_cam.setEnabled(enabled)
+
+    def set_restart_text(self, text: str):
+        """更新重启按钮文字（状态提示）"""
+        self.btn_restart_cam.setText(text)
 
     def is_depth_mode(self) -> bool:
         """检查是否为深度相机模式"""
