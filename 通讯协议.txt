@@ -6,11 +6,17 @@ mosquitto_pub -t "test/hello" -m "你好MQTT"    发布
 传送带，ht/status/1      状态到上位机
 相机，ht/cmd/2 设备到上位机                     xj1 1 1	相机1：检测开，扫码开
 相机，ht/status/2 上位机到设备
-
-mosquitto_pub -t "ht/cmd/2" -m "xj1 1 1"  发布
-
-
+仓储，ht/cmd/3  上位计到仓储                  
+仓储，ht/status/3  仓储到上位计           
 
 
+mosquitto_pub -t "ht/cmd/3" -m "xj1 1 1"  发布
+mosquitto_sub -t "ht/cmd/3" 
 
 mosquitto_pub -h frp-box.com -p 15545 -t group_chat -m "欢迎" -r  遗留消息
+
+---------订阅
+-h brokerip 远程测试输入
+-p 15545 指定端口号
+---------发布
+-r  遗留消息  发布的时候，谁加进来会自动发布一下，相当于公告

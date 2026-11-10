@@ -6,7 +6,7 @@
   "window_geometry": null,
   "sidebar_expanded": true,
   "slot_1": {
-    "camera_index": 2,
+    "camera_index": -1,
     "conf": 0.89,
     "iou": 0.45,
     "inference_interval": 9,
@@ -33,5 +33,6 @@
   "slot_2_inference_interval": 20.0,
   "slot_2_qr_interval": 1.0,
   "slot_1_inference_interval": 9.0,
-  "slot_1_qr_interval": 9.0
+  "slot_1_qr_interval": 9.0,
+  "active_slot": 2
 }

@@ -45,7 +45,7 @@ class DetectionList(QTableWidget):
                 border: 1px solid #e0e0e0;
                 border-radius: 4px;
                 gridline-color: #e0e0e0;
-                font-size: 12px;
+                font-size: 10px;
             }
             QHeaderView::section {
                 background-color: #f0f0f0;

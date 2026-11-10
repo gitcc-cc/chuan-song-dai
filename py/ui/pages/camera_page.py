@@ -53,7 +53,7 @@ from typing import List, Dict, Any
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QGroupBox,
     QPushButton, QComboBox, QLabel, QFileDialog, QMessageBox,
-    QSizePolicy
+    QSizePolicy, QDialog, QScrollArea
 )
 # Qt: 对齐方式等枚举
 # pyqtSlot: 装饰器，标记方法为 Qt 槽函数（接收信号用）
@@ -77,6 +77,7 @@ from ui.pages.base_page import BasePage
 # CameraView: 自定义画面显示控件（QLabel + 叠加检测框/二维码）
 # DetectionTable: 检测结果表格控件
 from ui.widgets import ParamSlider, CameraView, DetectionTable
+from ui import theme
 # OpenCVCamera: 基于 OpenCV 的摄像头封装
 # BaseCamera: 摄像头基类（定义 open/close/read 等接口）
 from vision.camera import OpenCVCamera, BaseCamera
@@ -84,6 +85,7 @@ from vision.camera import OpenCVCamera, BaseCamera
 from vision.detector import Detector
 # InferenceWorker: 后台推理线程，负责读帧→推理→发信号
 from vision.worker import InferenceWorker
+from vision.qr_decoder import set_scan_mode
 # get_config: 获取全局配置对象（读写 JSON 配置文件）
 from core.config import get_config
 # QObject: Qt 对象基类（信号必须定义在 QObject 子类中）
@@ -219,6 +221,9 @@ class CameraPage(BasePage):
         # _cameras_detected: 标记是否已完成首次摄像头枚举（避免重复枚举）
         self._cameras_detected = False  # 是否已检测过摄像头列表
 
+        # 设置弹窗（模型/摄像头/参数，点工具栏「⚙」打开）
+        self._settings_dialog: QDialog = None
+
         # ========== 构建界面 ==========
         self._setup_ui()          # 创建所有 UI 控件并布局
         self._connect_signals()   # 连接 worker 的信号到对应的槽函数
@@ -247,14 +252,15 @@ class CameraPage(BasePage):
         - addWidget(stretch=N): stretch 控制空间分配比例
         """
         # 整体水平布局（左面板 + 右侧面板）
+        self.setStyleSheet(theme.page_qss())  # 全局浅色 QSS（tokens 统一管理）
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(8, 8, 8, 8)  # 外边距（左上右下）
         main_layout.setSpacing(8)  # 子控件之间的间距
 
-        # ============ 左侧控制面板 ============
-        # 固定宽度 300px，不会随窗口缩放
+        # ============ 左侧控制面板（塞进弹窗，不占主界面） ============
+        # 固定宽度 240px，内容超高时出滚动条
         left_panel = QWidget()
-        left_panel.setFixedWidth(300)
+        left_panel.setFixedWidth(240)
         # Fixed: 固定尺寸，Expanding: 自动拉伸填满剩余空间
         left_panel.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         left_layout = QVBoxLayout(left_panel)  # 面板内部垂直排列
@@ -268,7 +274,7 @@ class CameraPage(BasePage):
 
         # 模型选择按钮 + 路径标签（水平排列）
         model_row = QHBoxLayout()
-        self.btn_model = QPushButton("选择模型 (.pt)")
+        self.btn_model = QPushButton("选择模型 (.pt/.bin)")
         # clicked 信号连接到 _on_select_model 槽函数
         self.btn_model.clicked.connect(self._on_select_model)
         model_row.addWidget(self.btn_model, stretch=1)  # stretch=1 让按钮占满水平空间
@@ -337,19 +343,14 @@ class CameraPage(BasePage):
 
         left_layout.addWidget(param_group)
 
-        # --- 预留：类别→指令配置 ---
-        # 未来功能：检测到某个类别时自动发送 MQTT 指令
-        future_group = QGroupBox("类别触发配置 (预留)")
-        future_layout = QVBoxLayout(future_group)
-        lbl = QLabel("此处后续添加：\n检测到 [类别] → 发送 [指令]")
-        lbl.setStyleSheet("color: #999; font-size: 12px;")
-        lbl.setWordWrap(True)
-        future_layout.addWidget(lbl)
-        left_layout.addWidget(future_group)
-
         # addStretch() 在底部添加弹性空间，把上面的控件"顶"到顶部
         left_layout.addStretch()
-        main_layout.addWidget(left_panel)
+        # 面板套 QScrollArea 存起来，工具栏「⚙」按钮弹出（不进主布局）
+        self._settings_scroll = QScrollArea()
+        self._settings_scroll.setWidgetResizable(True)
+        self._settings_scroll.setWidget(left_panel)
+        self._settings_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self._settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         # ============ 右侧：上下分割 ============
         # QSplitter 可以让用户拖拽调整上下区域的比例
@@ -375,17 +376,10 @@ class CameraPage(BasePage):
 
         # ---- 拍照按钮（保存当前帧为图片） ----
         self.btn_snapshot = QPushButton()
-        self.btn_snapshot.setFixedSize(40, 40)  # 固定按钮大小
+        self.btn_snapshot.setFixedSize(48, 48)  # 固定按钮大小
         self.btn_snapshot.setToolTip("保存当前帧为图片")
         # QPushButton 样式表：正常状态灰色背景，悬停加深
-        self.btn_snapshot.setStyleSheet("""
-            QPushButton {
-                background-color: #f0f0f0;
-                border: none;           /* 去掉边框 */
-                border-radius: 6px;     /* 圆角 */
-            }
-            QPushButton:hover { background-color: #e0e0e0; }
-        """)
+        self.btn_snapshot.setStyleSheet(theme.toggle_btn())
         if _HAS_QTA:
             # qtawesome 图标：fa5s.camera = 相机图标，scale_factor=1.2 稍微放大
             self.btn_snapshot.setIcon(qta.icon("fa5s.camera", color="#333", scale_factor=1.2))
@@ -397,16 +391,9 @@ class CameraPage(BasePage):
 
         # ---- 检测一次按钮（只推理一帧，不持续检测） ----
         self.btn_detect_once = QPushButton()
-        self.btn_detect_once.setFixedSize(40, 40)
+        self.btn_detect_once.setFixedSize(48, 48)
         self.btn_detect_once.setToolTip("检测一次（只推理一帧）")
-        self.btn_detect_once.setStyleSheet("""
-            QPushButton {
-                background-color: #f0f0f0;
-                border: none;
-                border-radius: 6px;
-            }
-            QPushButton:hover { background-color: #e0e0e0; }
-        """)
+        self.btn_detect_once.setStyleSheet(theme.toggle_btn())
         if _HAS_QTA:
             self.btn_detect_once.setIcon(qta.icon("fa5s.hand-pointer", color="#333", scale_factor=1.2))
             self.btn_detect_once.setIconSize(self.btn_detect_once.size() * 0.6)
@@ -420,20 +407,8 @@ class CameraPage(BasePage):
         # 选中=绿色=正在检测，未选中=灰色=停止检测
         self.btn_camera = QPushButton()
         self.btn_camera.setCheckable(True)
-        self.btn_camera.setFixedSize(40, 40)
-        self.btn_camera.setStyleSheet("""
-            QPushButton {
-                background-color: #f0f0f0;
-                border: none;
-                border-radius: 6px;
-            }
-            QPushButton:hover { background-color: #e0e0e0; }
-            QPushButton:checked {                          /* 选中状态 */
-                background-color: #07C160;                 /* 绿色背景 */
-                border: 2px solid #059648;                 /* 深绿色边框 */
-            }
-            QPushButton:checked:hover { background-color: #06AD56; }
-        """)
+        self.btn_camera.setFixedSize(48, 48)
+        self.btn_camera.setStyleSheet(theme.toggle_btn())
         self._update_camera_btn_icon(False)  # 初始图标：播放图标
         # toggled 信号：按钮选中状态改变时触发（checked=True/False）
         self.btn_camera.toggled.connect(self._on_camera_toggled)
@@ -443,24 +418,9 @@ class CameraPage(BasePage):
         # 切换是否在画面上显示检测框中心的 (x, y) 坐标
         self.btn_coords = QPushButton()
         self.btn_coords.setCheckable(True)
-        self.btn_coords.setFixedSize(40, 40)
+        self.btn_coords.setFixedSize(48, 48)
         self.btn_coords.setToolTip("显示检测框中心坐标")
-        self.btn_coords.setStyleSheet("""
-            QPushButton {
-                background-color: #f0f0f0;
-                border: none;
-                border-radius: 6px;
-                font-size: 11px;
-                font-weight: bold;
-            }
-            QPushButton:hover { background-color: #e0e0e0; }
-            QPushButton:checked {
-                background-color: #07C160;
-                border: 2px solid #059648;
-                color: white;
-            }
-            QPushButton:checked:hover { background-color: #06AD56; }
-        """)
+        self.btn_coords.setStyleSheet(theme.toggle_btn())
         if _HAS_QTA:
             self.btn_coords.setIcon(qta.icon("fa5s.crosshairs", color="#333", scale_factor=1.2))
             self.btn_coords.setIconSize(self.btn_coords.size() * 0.6)
@@ -474,31 +434,48 @@ class CameraPage(BasePage):
         self.btn_qr = QPushButton()
         self.btn_qr.setCheckable(True)
         self.btn_qr.setChecked(True)  # 默认开启扫码
-        self.btn_qr.setFixedSize(40, 40)
+        self.btn_qr.setFixedSize(48, 48)
         self.btn_qr.setToolTip("启用/禁用二维码扫描")
-        self.btn_qr.setStyleSheet("""
-            QPushButton {
-                background-color: #f0f0f0;
-                border: none;
-                border-radius: 6px;
-                font-size: 10px;
-                font-weight: bold;
-            }
-            QPushButton:hover { background-color: #e0e0e0; }
-            QPushButton:checked {
-                background-color: #07C160;
-                border: 2px solid #059648;
-                color: white;
-            }
-            QPushButton:checked:hover { background-color: #06AD56; }
-        """)
+        self.btn_qr.setStyleSheet(theme.toggle_btn())
         if _HAS_QTA:
-            self.btn_qr.setIcon(qta.icon("fa5s-qrcode", color="#333", scale_factor=1.2))
+            self.btn_qr.setIcon(qta.icon("fa5s.qrcode", color="#333", scale_factor=1.2))
             self.btn_qr.setIconSize(self.btn_qr.size() * 0.6)
         else:
             self.btn_qr.setText("QR")
         self.btn_qr.toggled.connect(self._on_qr_toggled)
         toolbar.addWidget(self.btn_qr)
+
+        # ---- 扫码模式下拉（全局三档，与产线页共享同一 config） ----
+        # qr=只认二维码（默认，最省）；barcode=只认条形码；all=全部尝试
+        self._scan_mode_labels = ("二维码", "条形码", "全部")
+        self._scan_mode_values = ("qr", "barcode", "all")
+        # 生成产线配置管理器（同一 JSON 存档，保证两页联动）
+        from core.config import get_production_config
+        prod_cfg = get_production_config()
+        _saved_mode = prod_cfg.get("scan_mode", "qr")
+        set_scan_mode(_saved_mode)
+        self.combo_scan_mode = QComboBox()
+        self.combo_scan_mode.addItems(self._scan_mode_labels)
+        self.combo_scan_mode.setCurrentIndex(
+            self._scan_mode_values.index(_saved_mode) if _saved_mode in self._scan_mode_values else 0)
+        self.combo_scan_mode.setFixedHeight(38)
+        self.combo_scan_mode.setToolTip("扫码模式：二维码(qr)/条形码(barcode)/全部(all)")
+        self.combo_scan_mode.currentTextChanged.connect(self._on_scan_mode_changed)
+        toolbar.addWidget(self.combo_scan_mode)
+        self._prod_cfg = prod_cfg  # 切换时写这里，与产线页同源
+
+        # ---- 设置按钮（打开参数配置弹窗） ----
+        self.btn_settings = QPushButton()
+        self.btn_settings.setFixedSize(48, 48)
+        self.btn_settings.setToolTip("模型/摄像头/参数设置")
+        self.btn_settings.setStyleSheet(theme.toggle_btn())
+        if _HAS_QTA:
+            self.btn_settings.setIcon(qta.icon("fa5s.cog", color="#333", scale_factor=1.2))
+            self.btn_settings.setIconSize(self.btn_settings.size() * 0.6)
+        else:
+            self.btn_settings.setText("⚙")
+        self.btn_settings.clicked.connect(self._on_open_settings)
+        toolbar.addWidget(self.btn_settings)
 
         # addStretch() 把后面的控件推到右边
         toolbar.addStretch()
@@ -641,7 +618,7 @@ class CameraPage(BasePage):
             self,  # 父窗口
             "选择 YOLO 模型",  # 对话框标题
             self.config.get("last_model_dir", os.path.expanduser("~")),  # 初始目录
-            "PyTorch Model (*.pt);;All Files (*)"  # 文件过滤器
+            "模型文件 (*.bin *.pt);;All Files (*)"  # 文件过滤器
         )
         if path:  # 用户没有取消
             # 记住这次的目录，下次打开时默认在这里
@@ -942,10 +919,43 @@ class CameraPage(BasePage):
         self._worker.set_qr_enabled(checked)  # 通知 worker 是否执行二维码解码
         if _HAS_QTA:
             color = "#ffffff" if checked else "#333333"
-            self.btn_qr.setIcon(qta.icon("fa5s-qrcode", color=color, scale_factor=1.2))
+            self.btn_qr.setIcon(qta.icon("fa5s.qrcode", color=color, scale_factor=1.2))
             self.btn_qr.setIconSize(self.btn_qr.size() * 0.6)
         status = "扫码已启用" if checked else "扫码已禁用"
         self._set_status(status)
+
+    def _on_scan_mode_changed(self, text: str):
+        """
+        扫码模式下拉变化（与产线页共享同一 config）。
+
+        三档语义：二维码(qr, 默认最省) / 条形码(barcode) / 全部(all 成本最高)。
+        写 vision.qr_decoder 全局状态（worker 即时生效）+ production_config 存档。
+        """
+        idx = self._scan_mode_labels.index(text) if text in self._scan_mode_labels else 0
+        mode = self._scan_mode_values[idx]
+        set_scan_mode(mode)
+        self._prod_cfg.set("scan_mode", mode)
+        self._prod_cfg.save()
+        self._set_status(f"扫码模式: {text}")
+
+    def _on_open_settings(self):
+        """
+        点击「⚙」按钮 —— 打开参数配置弹窗（非模态）。
+
+        非模态（show 而非 exec）：弹窗打开时预览/检测照常跑，可以边看画面边调参。
+        首次点击创建 QDialog，之后仅 show/raise，控件状态在弹窗关闭后保留。
+        """
+        if self._settings_dialog is None:
+            d = QDialog(self)
+            d.setWindowTitle("相机设置")
+            v = QVBoxLayout(d)
+            v.setContentsMargins(6, 6, 6, 6)
+            v.addWidget(self._settings_scroll)
+            d.setFixedWidth(264)  # 面板 240 + 滚动条/边距
+            self._settings_dialog = d
+        self._settings_dialog.show()
+        self._settings_dialog.raise_()
+        self._settings_dialog.activateWindow()
 
     def _on_snapshot(self):
         """
@@ -1126,6 +1136,14 @@ class CameraPage(BasePage):
         因为枚举需要扫描所有设备，可能耗时较长。
         首次枚举在 _load_saved_config() 中完成，后续 on_show 只打开已知摄像头。
         """
+        # 扫码模式下拉先对齐全局状态（可能刚在产线页切过）
+        from vision.qr_decoder import get_scan_mode
+        _mode = get_scan_mode()
+        _mode_idx = self._scan_mode_values.index(_mode) if _mode in self._scan_mode_values else 0
+        self.combo_scan_mode.blockSignals(True)   # 防触发 _on_scan_mode_changed 再写一遍
+        self.combo_scan_mode.setCurrentIndex(_mode_idx)
+        self.combo_scan_mode.blockSignals(False)
+
         if not self._camera.is_opened() and self._cameras_detected:
             cam_idx = self.cam_combo.currentData()  # 获取当前选中的摄像头索引
             cam_name = self.cam_combo.currentText()

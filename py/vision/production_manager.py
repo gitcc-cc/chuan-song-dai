@@ -54,9 +54,13 @@ def restart_camera_node() -> None:
                    capture_output=True, check=False)
     time.sleep(3)  # 等 UVC 设备释放
 
-    # 重新启动（shell 里 source ROS 环境后后台拉起，日志追加）
+    # 重新启动（source ROS + ascam 工作区 + SDK lib 后后台拉起，日志追加）
+    # 缺工作区/lib 路径 → 节点找不到 libAngstrongCameraSdk.so（exit 127）
     cmd = (
         f'source {_ROS_SETUP} && '
+        f'source ~/ascam_ros2_ws/install/setup.bash && '
+        f'export LD_LIBRARY_PATH=~/ascam_ros2_ws/src/ascamera/libs/lib/'
+        f'aarch64-linux-gnu:~/ascam_ros2_ws/src/ascamera/libs/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH && '
         f'setsid ros2 launch {_CAM_PKG} {_CAM_LAUNCH} >> {_CAM_LOG} 2>&1 &'
     )
     subprocess.Popen(cmd, shell=True, executable="/bin/bash",
@@ -137,7 +141,8 @@ class ProductionManager(QObject):
     
     # Qt信号定义：用于与其他组件通信
     slot_started = pyqtSignal(int, object)  # (slot_id, worker) - 槽位启动成功
-    mqtt_cmd_received = pyqtSignal(str)     # 收到的MQTT指令原文 - 用于UI显示
+    mqtt_cmd_received = pyqtSignal(str)     # 收到MQTT指令时发射，传递指令原文
+    slot_activated = pyqtSignal(int)        # MQTT指令指定槽位 → UI 预览切到该槽
     detection_toggled = pyqtSignal(int, bool)  # (slot_id, enabled) - 检测开关变化
     qr_toggled = pyqtSignal(int, bool)         # (slot_id, enabled) - 扫码开关变化
 
@@ -196,16 +201,22 @@ class ProductionManager(QObject):
             raise FileNotFoundError(f"模型文件不存在: {model_path}")
 
         try:
-            from ultralytics import YOLO
-            self._model = YOLO(model_path)  # 加载YOLO模型
-
-            # 强制使用 GPU（如果可用），避免静默回退到 CPU
-            import torch
-            if torch.cuda.is_available():
-                self._model.to("cuda:0")
-                print("[ProductionManager] YOLO 已加载到 GPU: cuda:0")
+            # .bin → BPU 模型（RDK 板上 hbm_runtime）；.pt → ultralytics
+            if model_path.endswith(".bin"):
+                from vision.bpu_model import BpuModel
+                self._model = BpuModel(model_path)
+                print("[ProductionManager] BPU 模型已加载（hbm_runtime）")
             else:
-                print("[ProductionManager] 警告: CUDA 不可用，YOLO 使用 CPU")
+                from ultralytics import YOLO
+                self._model = YOLO(model_path)  # 加载YOLO模型
+
+                # 强制使用 GPU（如果可用），避免静默回退到 CPU
+                import torch
+                if torch.cuda.is_available():
+                    self._model.to("cuda:0")
+                    print("[ProductionManager] YOLO 已加载到 GPU: cuda:0")
+                else:
+                    print("[ProductionManager] 警告: CUDA 不可用，YOLO 使用 CPU")
 
             self._model_path = model_path
             self._model_loaded = True
@@ -431,11 +442,10 @@ class ProductionManager(QObject):
             if self._depth_mode[idx] and self._depth_workers[idx]:
                 # 深度模式：使用DepthWorker
                 self._depth_workers[idx].enable_inference()  # 启用YOLO检测
-                self._depth_workers[idx].set_qr_enabled(True)  # 启用二维码扫描
+                # 检测/扫码完全分开：不多动扫码开关
             elif self._workers[idx]:
                 # 普通模式：使用InferenceWorker
                 self._workers[idx].enable_inference()  # 启用YOLO检测
-                self._workers[idx].set_qr_enabled(True)  # 启用二维码扫描
             self.detection_toggled.emit(slot_id, True)  # 发射信号，通知UI检测已开启
             print(f"[ProductionManager] 槽位{slot_id}: 检测已开启")
 
@@ -460,11 +470,10 @@ class ProductionManager(QObject):
             if self._depth_mode[idx] and self._depth_workers[idx]:
                 # 深度模式：使用DepthWorker
                 self._depth_workers[idx].disable_inference()  # 禁用YOLO检测
-                self._depth_workers[idx].set_qr_enabled(False)  # 禁用二维码扫描
+                # 检测/扫码完全分开：不多动扫码开关
             elif self._workers[idx]:
                 # 普通模式：使用InferenceWorker
                 self._workers[idx].disable_inference()  # 禁用YOLO检测
-                self._workers[idx].set_qr_enabled(False)  # 禁用二维码扫描
             self.detection_toggled.emit(slot_id, False)  # 发射信号，通知UI检测已关闭
             print(f"[ProductionManager] 槽位{slot_id}: 检测已关闭")
 
@@ -725,6 +734,10 @@ class ProductionManager(QObject):
         else:
             print(f"[ProductionManager] 未知槽位: {slot_cmd}")
             return
+
+        # 单预览串行架构：指令目标槽位 → UI 切预览到该槽
+        # （all = 全槽开启检测，预览落到第一个槽 xj1，后续检测在预览窗里看 xj1）
+        self.slot_activated.emit(slots[0])
 
         # 执行指令：遍历目标槽位
         for slot_id in slots:

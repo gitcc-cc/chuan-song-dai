@@ -110,9 +110,9 @@ class Detector:
             - 模型加载可能需要几秒钟，取决于模型大小和磁盘速度
             - GPU 加速需要安装 CUDA 和对应的 PyTorch 版本
         """
-        # 检查 ultralytics 库是否已安装
-        if not _HAS_ULTRALYTICS:
-            raise RuntimeError("未安装 ultralytics: pip install ultralytics")
+        # ultralytics 未安装时不 raise（BPU/无 YOLO 环境下 GUI 照常起，
+        # infer() 返回空，扫码等功能不受影响）
+        self.available = _HAS_ULTRALYTICS
 
         # 保存模型路径，用于后续加载
         self.model_path = model_path
@@ -234,8 +234,20 @@ class Detector:
 
         # 保存模型路径
         self.model_path = model_path
-        
+
+        # .bin → BPU 模型（RDK 板上 hbm_runtime）；.pt → ultralytics
+        if model_path.endswith(".bin"):
+            from vision.bpu_model import BpuModel
+            self.model = BpuModel(model_path)  # 类别名从产线配置 bpu_names 读取
+            self.names = dict(self.model.names)
+            self.available = True  # BPU 路径不依赖 ultralytics
+            print(f"[Detector] BPU 模型已加载: {model_path}")
+            return True
+
         # 加载 YOLO 模型（这会从磁盘读取模型文件）
+        if not self.available:
+            print("[Detector] 警告: ultralytics 未安装，无法加载 .pt 模型")
+            return []
         self.model = YOLO(model_path)
         
         # 将模型移动到指定设备（GPU 或 CPU）

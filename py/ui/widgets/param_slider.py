@@ -68,8 +68,8 @@ class ParamSlider(QWidget):
 
         # 参数名称标签（固定宽度80像素）
         self.lbl_name = QLabel(label)
-        self.lbl_name.setFixedWidth(80)
-        self.lbl_name.setStyleSheet("font-size: 14px; color: #333;")
+        self.lbl_name.setFixedWidth(56)
+        self.lbl_name.setStyleSheet("font-size: 11px; color: #333;")
         layout.addWidget(self.lbl_name)
 
         # 水平滑块（拉伸填充）
@@ -82,9 +82,9 @@ class ParamSlider(QWidget):
 
         # 数值输入框（固定宽度70像素，居中对齐）
         self.edit = QLineEdit()
-        self.edit.setFixedWidth(70)
+        self.edit.setFixedWidth(56)
         self.edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.edit.setStyleSheet("font-size: 13px;")
+        self.edit.setStyleSheet("font-size: 11px;")
         # 连接回车键按下信号到槽函数
         self.edit.returnPressed.connect(self._on_edit_finished)
         layout.addWidget(self.edit)
@@ -92,8 +92,8 @@ class ParamSlider(QWidget):
         # 单位标签（如果有单位）
         if self._unit:
             self.lbl_unit = QLabel(self._unit)
-            self.lbl_unit.setFixedWidth(30)
-            self.lbl_unit.setStyleSheet("font-size: 13px; color: #999;")  # 灰色单位文字
+            self.lbl_unit.setFixedWidth(24)
+            self.lbl_unit.setStyleSheet("font-size: 11px; color: #999;")  # 灰色单位文字
             layout.addWidget(self.lbl_unit)
 
     def _slider_to_value(self, slider_val: int) -> float:

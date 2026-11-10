@@ -30,13 +30,13 @@ class SidebarButton(QPushButton):
         self._expanded = True
 
         self.setCheckable(True)
-        self.setFixedHeight(44)
+        self.setFixedHeight(36)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         # 图标
         self._icon_label = QLabel()
-        self._icon_label.setFixedSize(40, 40)
+        self._icon_label.setFixedSize(32, 32)
         self._icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._update_icon()
 
@@ -92,8 +92,8 @@ class Sidebar(QWidget):
     page_changed = pyqtSignal(str)      # 页面切换信号
     toggle_requested = pyqtSignal(bool) # 展开/折叠请求
 
-    EXPANDED_WIDTH = 240
-    COLLAPSED_WIDTH = 60
+    EXPANDED_WIDTH = 132   # 紧凑版：适配 1024 宽小屏（原 240 是按 1920 设计的）
+    COLLAPSED_WIDTH = 48
     ANIMATION_DURATION = 200
 
     def __init__(self, parent=None):
@@ -104,27 +104,28 @@ class Sidebar(QWidget):
         self._current_page = None
 
         self.setFixedWidth(self.EXPANDED_WIDTH)
-        self.setStyleSheet("""
-            Sidebar {
-                background-color: #ffffff;
-                border-right: 1px solid #e0e0e0;
-            }
-            SidebarButton {
+        from ui import theme
+        self.setStyleSheet(f"""
+            Sidebar {{
+                background-color: {theme.PANEL};
+                border-right: 1px solid {theme.LINE};
+            }}
+            SidebarButton {{
                 background-color: transparent;
                 border: none;
                 border-radius: 6px;
-                color: #333333;
-            }
-            SidebarButton:hover {
-                background-color: #f0f0f0;
-            }
-            SidebarButton:checked {
-                background-color: #e8f5e9;
-                color: #07C160;
-            }
-            SidebarButton:checked QLabel {
-                color: #07C160;
-            }
+                color: {theme.TXT2};
+            }}
+            SidebarButton:hover {{
+                background-color: {theme.CARD};
+            }}
+            SidebarButton:checked {{
+                background-color: {theme.CARD};
+                color: {theme.ACC};
+            }}
+            SidebarButton:checked QLabel {{
+                color: {theme.ACC};
+            }}
         """)
 
         self._setup_ui()
@@ -136,7 +137,7 @@ class Sidebar(QWidget):
 
         # 折叠/展开按钮
         self._toggle_btn = QPushButton()
-        self._toggle_btn.setFixedSize(36, 36)
+        self._toggle_btn.setFixedSize(28, 28)
         self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._toggle_btn.setStyleSheet("""
             QPushButton {

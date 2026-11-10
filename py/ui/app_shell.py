@@ -34,7 +34,7 @@
 """
 import os
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QHBoxLayout, QStackedWidget
+    QMainWindow, QWidget, QHBoxLayout, QStackedWidget, QApplication
 )
 from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtGui import QIcon
@@ -88,6 +88,7 @@ class AppShell(QMainWindow):
         # 设置窗口标题，显示在标题栏
         self.setWindowTitle("控制系统")
         # 设置窗口初始大小：宽1200像素，高800像素
+        # （实际显示时会按屏幕大小夹紧，见 _restore_state / _clamp_to_screen）
         self.resize(1200, 800)
 
         # 设置窗口图标（任务栏和标题栏显示的图标）
@@ -102,13 +103,22 @@ class AppShell(QMainWindow):
         # 创建中央部件 (Central Widget)
         # QMainWindow 必须设置一个中央部件，所有内容都放在它里面
         central = QWidget()
+        central.setStyleSheet("background-color: #f5f5f5;")  # 页面外底色，消除露白
         self.setCentralWidget(central)
+        # QMainWindowLayout 会用 central 的 minimumSizeHint 强制窗口最小尺寸
+        # （产线页 hint 高达 1226x847，小屏上窗口被撑出屏外且 resize 不生效）
+        # 显式压到 1x1 解除限制，窗口大小完全由用户/代码控制
+        central.setMinimumSize(1, 1)
         
         # 创建水平布局 (QHBoxLayout)，从左到右排列组件
         # 边距和间距都设为0，让侧边栏和页面紧贴在一起
         main_layout = QHBoxLayout(central)
         main_layout.setContentsMargins(0, 0, 0, 0)  # 左、上、右、下边距
         main_layout.setSpacing(0)  # 组件之间的间距
+        # 解除布局对窗口大小的强制：页面 minimumSizeHint（如产线页 1226x847）
+        # 否则小屏（RDK HDMI 1024x573）上 show() 时窗口被撑到屏幕外，"缩不小"
+        from PyQt6.QtWidgets import QLayout
+        main_layout.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
 
         # 创建侧边栏导航组件
         self.sidebar = Sidebar()
@@ -292,14 +302,36 @@ class AppShell(QMainWindow):
         # ---- 恢复窗口几何（位置和大小） ----
         # 从配置中读取保存的窗口几何信息（十六进制字符串）
         geom_hex = self.config.get("window_geometry")
+        # 当前屏幕可用区域（排除任务栏/面板）：窗口尺寸不能超过它，否则换小屏
+        # （如 RDK 的 HDMI）时窗口会溢出到屏幕外，看起来"缩不小"
+        screen = QApplication.primaryScreen().availableGeometry()
         if geom_hex:
             # 从十六进制字符串恢复窗口状态
             from PyQt6.QtCore import QByteArray
             # 将字符串编码为字节，再从十六进制解码为 QByteArray
             self.restoreGeometry(QByteArray.fromHex(geom_hex.encode()))
+            self._clamp_to_screen(screen)
         else:
-            # 首次启动，使用默认窗口大小
-            self.resize(1200, 800)
+            # 首次启动，使用默认窗口大小（不超过屏幕的 90%）
+            self.resize(min(1200, int(screen.width() * 0.9)),
+                        min(800, int(screen.height() * 0.9)))
+
+    def _clamp_to_screen(self, screen):
+        """
+        把窗口尺寸/位置夹紧到当前屏幕内
+
+        场景：保存几何来自大屏（如笔记本 1920x1080），换到小屏（RDK HDMI
+        1024x768）后 restoreGeometry 会把窗口放到屏幕外——标题栏拖不到、
+        边框够不着，用户看起来就是"窗口缩不小"。这里统一夹紧。
+        """
+        g = self.geometry()
+        new_w = min(g.width(), screen.width())
+        new_h = min(g.height(), screen.height())
+        if new_w != g.width() or new_h != g.height():
+            self.resize(new_w, new_h)
+        if not screen.contains(g.topLeft()):
+            self.move(max(screen.left(), min(g.x(), screen.right() - new_w)),
+                      max(screen.top(), min(g.y(), screen.bottom() - new_h)))
 
         # ---- 恢复侧边栏状态 ----
         # 读取侧边栏展开状态，默认为 True（展开）

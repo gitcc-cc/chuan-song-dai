@@ -75,6 +75,70 @@ _1D_TYPES = frozenset({
 _2D_TYPES = frozenset({"QRCODE", "DATA MATRIX", "DATAMATRIX", "PDF417", "AZTEC"})
 
 # ---------------------------------------------------------------------------
+# 扫码模式（全局三档）：qr / barcode / all
+# ---------------------------------------------------------------------------
+# 三档共用同一条渐进链（直读→估角→旋转→warp 游标，1D 的静区矫正和 QR 的
+# 定位角搜索一体化），差异只在 ZBar 的「符号注册表」——pyzbar.decode 的
+# symbols 参数决定 ZBar 本帧认哪些码制：
+#   qr      只注册 QRCODE：条形码 100% 拼不出，ZBar 的 1D 逐线扫描也整个省掉
+#   barcode 只注册 1D 符号：QR 100% 拼不出
+#   all     不限符号（完整能力，成本也最高）
+# 全局单份：decode 时现场读 _SCAN_MODE，所有 Worker/深度 Worker 即时生效，
+# 不用重启不用逐一 set。
+_SCAN_MODES = ("qr", "barcode", "all")
+
+# pyzbar 枚举名兼容取值（不同版本成员名略有差异，命中即用）
+def _zbar_symbol(*names):
+    if not _HAS_PYZBAR:
+        return None
+    for n in names:
+        s = getattr(pyzbar.ZBarSymbol, n, None)
+        if s is not None:
+            return s
+    return None
+
+
+def _build_symbol_table():
+    """按档位预生成符号表：{"qr": (...), "barcode": (...), "all": None}"""
+    if not _HAS_PYZBAR:
+        return {m: None for m in _SCAN_MODES}
+    qr = _zbar_symbol("QRCODE")
+    barcode = tuple(filter(None, (
+        _zbar_symbol("CODE128"), _zbar_symbol("CODE39"),
+        _zbar_symbol("CODE93"),  _zbar_symbol("I25"),
+        _zbar_symbol("CODABAR"), _zbar_symbol("EAN13"), _zbar_symbol("EAN8"),
+        _zbar_symbol("UPCA", "UPC_A"), _zbar_symbol("UPCE", "UPC_E"),
+        _zbar_symbol("ISBN10"), _zbar_symbol("ISBN13"),
+        _zbar_symbol("DATABAR"), _zbar_symbol("DATABAR_EXPANDED"),
+    )))
+    return {"qr": (qr,) if qr else None,
+            "barcode": barcode if barcode else None,
+            "all": None}
+
+
+_ZBAR_TABLE = _build_symbol_table()
+_SCAN_MODE = "qr"  # 模块级全局（默认二维码；与 config 持久化同源）
+
+
+def set_scan_mode(mode: str) -> None:
+    """切换全局扫码模式（qr/barcode/all）。UI 下拉与本函数一一对应。"""
+    global _SCAN_MODE
+    if mode in _SCAN_MODES:
+        _SCAN_MODE = mode
+
+
+def get_scan_mode() -> str:
+    return _SCAN_MODE
+
+
+def _zbar_decode(img):
+    """pyzbar.decode 按当前模式限定符号注册表后再调用。"""
+    if not _HAS_PYZBAR:
+        return []
+    return pyzbar.decode(img, symbols=_ZBAR_TABLE.get(_SCAN_MODE))
+
+
+# ---------------------------------------------------------------------------
 # 轮廓矫正兜底（rectify fallback）
 # ---------------------------------------------------------------------------
 # 直读/估角/旋转都失败后的最后一级：找码面轮廓 → minAreaRect 极角排序四角
@@ -451,23 +515,23 @@ class QRDecoder:
     def _try_levels(self, gray: np.ndarray):
         """整帧/裁剪图通用的 4 级解码，成功即返回（已滤退化假阳性）。"""
         # 级别1：灰度 + CLAHE
-        codes = self._filter_codes(pyzbar.decode(self._clahe.apply(gray)))
+        codes = self._filter_codes(_zbar_decode(self._clahe.apply(gray)))
         if not codes:
             # 级别2：2x 放大
             up = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-            codes = self._filter_codes(pyzbar.decode(self._clahe.apply(up)))
+            codes = self._filter_codes(_zbar_decode(self._clahe.apply(up)))
             if codes:
                 codes = self._scale_codes(codes, 0.5)
         if not codes:
             # 级别3：Otsu 二值化
             _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            codes = self._filter_codes(pyzbar.decode(binary))
+            codes = self._filter_codes(_zbar_decode(binary))
         if not codes:
             # 级别4：锐化 + 二值化
             blur = cv2.GaussianBlur(gray, (0, 0), 3)
             sharp = cv2.addWeighted(gray, 1.5, blur, -0.5, 0)
             _, binary = cv2.threshold(sharp, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            codes = self._filter_codes(pyzbar.decode(binary))
+            codes = self._filter_codes(_zbar_decode(binary))
         return codes
 
     # ------------------------------------------------------------------
@@ -562,7 +626,7 @@ class QRDecoder:
                             up = cv2.resize(bwarp, None, fx=fx, fy=fx,
                                             interpolation=cv2.INTER_NEAREST)
                             for img in (up, 255 - up):
-                                codes = self._rectify_filter(pyzbar.decode(img))
+                                codes = self._rectify_filter(_zbar_decode(img))
                                 if codes:
                                     break
                             if codes:
@@ -624,15 +688,15 @@ class QRDecoder:
                     up = cv2.resize(b2, None, fx=fx, fy=fx,
                                     interpolation=cv2.INTER_NEAREST)
                     for img in (up, 255 - up):
-                        codes = self._rectify_filter(pyzbar.decode(img))
+                        codes = self._rectify_filter(_zbar_decode(img))
                         if codes:
                             return codes
             for img in (enh, 255 - enh):
-                codes = self._rectify_filter(pyzbar.decode(img))
+                codes = self._rectify_filter(_zbar_decode(img))
                 if codes:
                     return codes
         for img in (warp, 255 - warp):
-            codes = self._rectify_filter(pyzbar.decode(img))
+            codes = self._rectify_filter(_zbar_decode(img))
             if codes:
                 return codes
         return []
@@ -929,11 +993,11 @@ class QRDecoder:
                 up = cv2.resize(b2, None, fx=fx, fy=fx,
                                 interpolation=cv2.INTER_NEAREST)
                 img = up if k % 2 == 0 else 255 - up
-                return pyzbar.decode(img)
+                return _zbar_decode(img)
             img = enh if sub == 8 else 255 - enh
-            return pyzbar.decode(img)
+            return _zbar_decode(img)
         img = warp if st == 30 else 255 - warp
-        return pyzbar.decode(img)
+        return _zbar_decode(img)
 
     @staticmethod
     def _bin_stage(bwarp, k):
@@ -942,7 +1006,7 @@ class QRDecoder:
         up = cv2.resize(bwarp, None, fx=fx, fy=fx,
                         interpolation=cv2.INTER_NEAREST)
         img = up if k % 2 == 0 else 255 - up
-        return pyzbar.decode(img)
+        return _zbar_decode(img)
 
 
 def match_qr_to_detections(qr_results: List[Dict[str, Any]],

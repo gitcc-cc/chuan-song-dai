@@ -97,7 +97,7 @@ class InferenceWorker(QThread):
         self._running = False            # 主循环是否运行，False 时退出 run() 方法
         self._inference_enabled = False  # 是否启用连续推理（True=每帧都推理）
         self._one_shot = False           # 单次触发标志，True 时推理一帧后自动复位
-        self._qr_enabled = True          # 二维码解码开关
+        self._qr_enabled = False         # 二维码解码开关（默认关闭，与检测分开开）
         self._inference_interval = 1     # 推理间隔（帧取模），1=每帧推理，N=每 N 帧推理 1 次
         self._qr_interval = 1            # 二维码解码间隔（帧取模）
         self._frame_count = 0            # 已读取的帧计数器，用于取模判断

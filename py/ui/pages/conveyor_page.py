@@ -17,7 +17,7 @@ import threading
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
-    QSlider, QLineEdit, QTextEdit, QFrame, QGroupBox, QMessageBox, QSplitter
+    QSlider, QLineEdit, QFrame, QGroupBox, QMessageBox, QSplitter
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
 from PyQt6.QtGui import QFont
@@ -25,7 +25,7 @@ from PyQt6.QtGui import QFont
 from core.mqtt_shared import get_shared_mqtt, connect_shared, disconnect_shared
 from core.controller import Controller
 from ui.pages.base_page import BasePage
-from styles import STYLE
+from ui import theme
 
 
 # 状态轮询间隔（毫秒）
@@ -116,7 +116,7 @@ class ConveyorPage(BasePage):
 
         # 页面标题
         self.setWindowTitle("传送带控制")
-        self.setStyleSheet(STYLE)
+        self.setStyleSheet(theme.page_qss())
 
         # 创建界面
         self._create_ui()
@@ -127,7 +127,6 @@ class ConveyorPage(BasePage):
         self.signals.disconnected.connect(self._on_disconnected)
         self.signals.connect_failed.connect(self._on_connect_failed)
         self.signals.status_update.connect(self._update_display)
-        self.signals.log_message.connect(self._append_log)
 
     # ============ 创建界面 ============
     def _create_ui(self):
@@ -162,11 +161,7 @@ class ConveyorPage(BasePage):
         # 中间区域：左右分割（系统状态 + 控制面板）
         # QSplitter 允许用户拖拽调整左右区域大小
         horizontal_splitter = QSplitter(Qt.Orientation.Horizontal)
-        horizontal_splitter.setHandleWidth(6)  # 分割线宽度 6px
-        horizontal_splitter.setStyleSheet("""
-            QSplitter::handle { background-color: #e0e0e0; }
-            QSplitter::handle:hover { background-color: #07C160; }
-        """)
+        horizontal_splitter.setHandleWidth(6)
 
         # 左侧：系统状态面板（显示电机状态、传感器状态等）
         status_group = self._create_status_panel()
@@ -179,23 +174,6 @@ class ConveyorPage(BasePage):
         # 设置初始宽度比例 1:1
         horizontal_splitter.setSizes([400, 400])
         main_layout.addWidget(horizontal_splitter, stretch=1)
-
-        # 底部：指令输入框 + 通信日志
-        bottom_widget = self._create_bottom_panel()
-        
-        # 垂直分割：上半部分是中间区域，下半部分是底部区域
-        vertical_splitter = QSplitter(Qt.Orientation.Vertical)
-        vertical_splitter.setHandleWidth(6)
-        vertical_splitter.setStyleSheet("""
-            QSplitter::handle { background-color: #e0e0e0; height: 3px; }
-            QSplitter::handle:hover { background-color: #07C160; }
-        """)
-        vertical_splitter.addWidget(horizontal_splitter)
-        vertical_splitter.addWidget(bottom_widget)
-        
-        # 设置初始高度比例 5:2（中间区域占大部分）
-        vertical_splitter.setSizes([500, 200])
-        main_layout.addWidget(vertical_splitter, stretch=1)
 
     def _create_header(self):
         """
@@ -212,9 +190,9 @@ class ConveyorPage(BasePage):
         布局：水平布局，从左到右依次排列
         """
         header = QFrame()
-        header.setFixedHeight(65)  # 固定高度 65px
+        header.setFixedHeight(56)
         header.setStyleSheet(
-            "background-color: #ffffff; border-bottom: 1px solid #e0e0e0;"
+            f"background-color: {theme.PANEL}; border-bottom: 1px solid {theme.LINE};"
         )
         # 水平布局，控件从左到右排列
         layout = QHBoxLayout(header)
@@ -222,8 +200,8 @@ class ConveyorPage(BasePage):
 
         # 标题
         title = QLabel("产线控制中心")
-        title.setFont(QFont("", 18, QFont.Weight.Bold))  # 字体大小18，加粗
-        title.setStyleSheet("color: #333333; border: none;")
+        title.setFont(QFont("", 15, QFont.Weight.Bold))  # 字体大小15，加粗
+        title.setStyleSheet(f"color: {theme.TXT}; border: none;")
         layout.addWidget(title)
         layout.addSpacing(30)  # 标题和后面控件之间留30px间距
 
@@ -231,7 +209,7 @@ class ConveyorPage(BasePage):
         # 导入默认 Broker 地址和端口
         from core.mqtt_shared import DEFAULT_BROKER, DEFAULT_PORT
         ip_label = QLabel("IP:")
-        ip_label.setStyleSheet("color: #333333; font-size: 15px; font-weight: bold;")
+        ip_label.setStyleSheet(f"color: {theme.TXT2}; font-size: 12px; font-weight: bold;")
         layout.addWidget(ip_label)
 
         # 输入框：用于输入 MQTT Broker 的 IP 地址
@@ -242,7 +220,7 @@ class ConveyorPage(BasePage):
 
         # 端口输入框
         port_label = QLabel("端口:")
-        port_label.setStyleSheet("color: #333333; font-size: 15px; font-weight: bold;")
+        port_label.setStyleSheet(f"color: {theme.TXT2}; font-size: 12px; font-weight: bold;")
         layout.addWidget(port_label)
 
         # 输入框：用于输入 MQTT Broker 的端口号
@@ -262,26 +240,12 @@ class ConveyorPage(BasePage):
         # 添加弹性空间，让后面的控件靠右对齐
         layout.addStretch()
 
-        # 实时时钟：显示当前时间
-        self.lbl_clock = QLabel("00:00:00")
-        self.lbl_clock.setFont(QFont("", 15))
-        self.lbl_clock.setStyleSheet("color: #999999;")
-        layout.addWidget(self.lbl_clock)
-        layout.addSpacing(15)
-
         # 连接状态标签：显示当前连接状态
         self.lbl_conn = QLabel("未连接")
-        self.lbl_conn.setFont(QFont("", 15))
+        self.lbl_conn.setFont(QFont("", 12))
         # 红色字体表示未连接
-        self.lbl_conn.setStyleSheet("color: #fa5151; font-weight: bold;")
+        self.lbl_conn.setStyleSheet(f"color: {theme.RED}; font-weight: bold;")
         layout.addWidget(self.lbl_conn)
-
-        # 时钟定时器：每秒更新一次时间显示
-        self.clock_timer = QTimer()
-        # 超时时调用 _update_clock 方法
-        self.clock_timer.timeout.connect(self._update_clock)
-        self.clock_timer.start(1000)  # 间隔 1000ms = 1秒
-        self._update_clock()  # 立即显示当前时间
 
         return header
 
@@ -295,8 +259,8 @@ class ConveyorPage(BasePage):
         
         QSS 类似 CSS，用于美化 Qt 控件
         """
-        return ("QLineEdit{background:#f5f5f5; border:1px solid #e0e0e0; "
-                "border-radius:6px; padding:6px 10px; font-size:15px;}"
+        return ("QLineEdit{background:#ffffff; border:1px solid #e0e0e0; "
+                "border-radius:4px; padding:5px 10px; font-size:13px; color:#333333;}"
                 "QLineEdit:focus{border-color:#07C160;}")
 
     def _connect_btn_style(self, connected: bool):
@@ -309,18 +273,12 @@ class ConveyorPage(BasePage):
         样式逻辑：
         - 已连接：红色背景（表示可以断开）
         - 未连接：绿色背景（表示可以连接）
-        
-        hover 效果：鼠标悬停时颜色变深
         """
         if connected:
             # 已连接状态：红色按钮，表示"断开"操作
-            return ("QPushButton{background:#fa5151; color:#fff; border:none;"
-                    "border-radius:6px; padding:8px 16px; font-weight:bold; font-size:15px;}"
-                    "QPushButton:hover{background:#E04444;}")
+            return theme.solid_btn(theme.RED, theme.RED_D)
         # 未连接状态：绿色按钮，表示"连接"操作
-        return ("QPushButton{background:#07C160; color:#fff; border:none;"
-                "border-radius:6px; padding:8px 16px; font-weight:bold; font-size:15px;}"
-                "QPushButton:hover{background:#06AD56;}")
+        return theme.solid_btn(theme.ACC, theme.ACC_D)
 
     def _create_status_panel(self):
         """
@@ -339,18 +297,18 @@ class ConveyorPage(BasePage):
         """
         group = QGroupBox("系统状态")  # 带标题的分组框
         layout = QVBoxLayout(group)    # 垂直布局
-        layout.setContentsMargins(8, 10, 8, 8)
+        layout.setContentsMargins(8, 14, 8, 8)
         layout.setSpacing(0)  # 行间距为0，紧凑排列
 
         # 状态项定义：(行号, 名称, 默认值, 颜色)
         status_items = [
-            (0, "电机模式", "停止",   "#333333"),  # 电机当前状态
-            (1, "舵机模式", "—",      "#333333"),  # 舵机方向
-            (2, "电位器",   "0 %",    "#333333"),  # 电位器位置
-            (3, "舵机速度", "0 / 13", "#333333"),  # 舵机速度
-            (4, "光纤传感器", "未检测", "#333333"),  # 传感器状态
-            (5, "速度模式", "就地",    "#07C160"),  # 速度控制模式
-            (6, "网络连接", "断开",    "#fa5151"),  # MQTT 连接状态
+            (0, "电机模式", "停止",   theme.TXT2),  # 电机当前状态
+            (1, "舵机模式", "—",      theme.TXT2),  # 舵机方向
+            (2, "电位器",   "0 %",    theme.ACC),   # 电位器位置
+            (3, "舵机速度", "0 / 13", theme.ACC),   # 舵机速度
+            (4, "光纤传感器", "未检测", theme.TXT2),  # 传感器状态
+            (5, "速度模式", "就地",    theme.ACC),  # 速度控制模式
+            (6, "网络连接", "断开",    theme.RED),  # MQTT 连接状态
         ]
 
         # 存储状态标签的字典，用于后续更新
@@ -361,37 +319,36 @@ class ConveyorPage(BasePage):
         for i, (row, name, default, color) in enumerate(status_items):
             # 创建一行容器
             row_widget = QWidget()
-            # 交替行背景色：偶数行浅灰，奇数行白色
-            bg = "#f8f8f8" if i % 2 == 0 else "#ffffff"
+            # 交替行背景色：偶数行深，奇数行稍浅
+            bg = theme.CARD if i % 2 == 0 else theme.PANEL
             row_widget.setObjectName(f"row{i}")  # 设置对象名，用于样式表
-            row_widget.setStyleSheet(f"QWidget#row{i}{{background:{bg}; border:none;}}")
+            row_widget.setStyleSheet(f"QWidget#row{i}{{background:{bg}; border:none; border-radius:4px;}}")
 
             # 行内水平布局
             row_layout = QHBoxLayout(row_widget)
-            row_layout.setContentsMargins(12, 0, 12, 0)  # 左右边距 12px
-            row_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            row_layout.setContentsMargins(12, 6, 12, 6)  # 上下 6px 的紧凑行高
+            row_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
-            # 状态名称标签（左侧）
+            # 状态名称标签（左侧，次要色小字）
             lbl_name = QLabel(name)
             lbl_name.setStyleSheet(
-                "color: #333333; font-size: 16px; font-weight: bold; background:transparent;"
+                f"color: {theme.TXT2}; font-size: 12px; background:transparent;"
             )
             lbl_name.setFixedWidth(110)  # 固定宽度，对齐整齐
-            lbl_name.setAlignment(Qt.AlignmentFlag.AlignCenter)
             row_layout.addWidget(lbl_name)
 
-            # 状态值标签（右侧），将被动态更新
+            # 状态值标签（右侧），等宽字体、右对齐——HMI 数据表风格
             lbl_value = QLabel(default)
-            lbl_value.setStyleSheet(
-                f"color: {color}; font-size: 16px; font-weight: bold; background:transparent;"
-            )
-            lbl_value.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            row_layout.addWidget(lbl_value, stretch=1)  # stretch=1 占据剩余空间
+            lbl_value.setStyleSheet(theme.mono_label(color, 13, bold=True))
+            lbl_value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
             # 保存标签引用，以便后续更新
             self.status_labels[name] = lbl_value
-            layout.addWidget(row_widget, stretch=1)
+            row_layout.addWidget(lbl_value, stretch=1)  # stretch=1 占据剩余空间
 
+            layout.addWidget(row_widget)
+
+        layout.addStretch(1)
         return group
 
     def _create_control_panel(self):
@@ -454,14 +411,14 @@ class ConveyorPage(BasePage):
         ctrl_group = QGroupBox("设备控制")
         ctrl_grid = QGridLayout(ctrl_group)  # 网格布局
 
-        # 按钮定义：(行, 列, 文字, 背景色, 字体色, 悬停色, MQTT命令)
+        # 按钮定义：(行, 列, 文字, 背景色, 文字色, 悬停色, MQTT命令)
         buttons = [
-            (0, 0, "正转",   "#576B95", "#fff", "#4A5D84", "dj 1"),   # 正转命令
-            (0, 1, "反转",   "#576B95", "#fff", "#4A5D84", "dj 2"),   # 反转命令
-            (1, 0, "停止",   "#fa5151", "#fff", "#E04444", "dj 0"),   # 停止命令
-            (1, 1, "自动",   "#FFC300", "#333", "#E6B000", "dj 3"),   # 自动模式命令
-            (2, 0, "解抱闸", "#E67E22", "#fff", "#D35400", "en 0"),   # 解除抱闸
-            (2, 1, "上抱闸", "#E67E22", "#fff", "#D35400", "en 1"),   # 启用抱闸
+            (0, 0, "正转",   theme.ACC,   "#fff", theme.ACC_D, "dj 1"),   # 正转命令
+            (0, 1, "反转",   theme.ACC,   "#fff", theme.ACC_D, "dj 2"),   # 反转命令
+            (1, 0, "停止",   theme.RED,   "#fff", theme.RED_D, "dj 0"),   # 停止命令
+            (1, 1, "自动",   theme.AMBER, "#333", "#e6b000",   "dj 3"),   # 自动模式命令
+            (2, 0, "解抱闸", "#576B95",  "#fff", "#4A5D84",   "en 0"),   # 解除抱闸
+            (2, 1, "上抱闸", "#576B95",  "#fff", "#4A5D84",   "en 1"),   # 启用抱闸
         ]
 
         # 创建按钮并添加到网格
@@ -469,10 +426,11 @@ class ConveyorPage(BasePage):
             btn = QPushButton(text)
             btn.setStyleSheet(
                 f"QPushButton{{background:{bg}; color:{fg}; border:none;"
-                f"border-radius:6px; padding:12px; font-weight:bold; font-size:15px;}}"
+                f"border-radius:4px; padding:12px; font-weight:bold; font-size:16px;}}"
                 f"QPushButton:hover{{background:{hover};}}"
+                f"QPushButton:pressed{{border:2px solid {theme.ACC};}}"
             )
-            btn.setMinimumHeight(48)  # 最小高度 48px
+            btn.setMinimumHeight(60)  # 触控友好：7 寸屏手指点击
             # 点击按钮时发送对应的 MQTT 命令
             # lambda c=cmd: 捕获当前 cmd 值，避免闭包陷阱
             btn.clicked.connect(lambda checked, c=cmd: self._send_command(c))
@@ -480,13 +438,8 @@ class ConveyorPage(BasePage):
 
         # 模式切换按钮：就地模式 ↔ 远程模式
         self.btn_mode = QPushButton("就地模式")
-        self.btn_mode.setStyleSheet(
-            "QPushButton{background:#07C160; color:#fff;"
-            "border:none; border-radius:6px; padding:12px;"
-            "font-weight:bold; font-size:16px;}"
-            "QPushButton:hover{background:#06AD56;}"
-        )
-        self.btn_mode.setMinimumHeight(52)  # 最小高度 52px
+        self.btn_mode.setStyleSheet(theme.ghost_btn())
+        self.btn_mode.setMinimumHeight(56)  # 触控友好：与设备按钮匹配
         # 点击时调用 _toggle_mode 切换模式
         self.btn_mode.clicked.connect(self._toggle_mode)
         # 添加到网格第3行，跨2列
@@ -494,95 +447,6 @@ class ConveyorPage(BasePage):
 
         layout.addWidget(ctrl_group, stretch=3)  # stretch=3 占据大部分空间
         return widget
-
-    def _create_bottom_panel(self):
-        """
-        创建底部面板：指令输入 + 通信日志
-        
-        布局：
-        ┌─────────────────────────────────────┐
-        │  > [输入指令，回车发送...] [发送]    │  ← 指令输入框
-        ├─────────────────────────────────────┤
-        │  通信日志                           │
-        │  [14:30:01] → status                │  ← 日志显示
-        │  [14:30:01] ← {"state":1,...}       │
-        └─────────────────────────────────────┘
-        
-        功能：
-        1. 指令输入框：手动输入 MQTT 指令
-        2. 发送按钮：发送输入的指令
-        3. 通信日志：显示发送和接收的消息
-        """
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-
-        # 指令输入区域
-        cmd_frame = QFrame()
-        cmd_frame.setStyleSheet(
-            "background-color: #fff; border: 1px solid #e0e0e0; border-radius: 8px;"
-        )
-        cmd_layout = QHBoxLayout(cmd_frame)
-        cmd_layout.setContentsMargins(10, 10, 10, 10)
-        cmd_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-
-        # 提示符 ">"
-        prompt = QLabel(">")
-        prompt.setStyleSheet("color: #07C160; font-size: 18px; font-weight: bold;")
-        cmd_layout.addWidget(prompt)
-
-        # 指令输入框
-        self.cmd_entry = QLineEdit()
-        self.cmd_entry.setPlaceholderText("输入指令，回车发送...")  # 占位提示文字
-        # 按回车时发送指令
-        self.cmd_entry.returnPressed.connect(self._on_send_command)
-        cmd_layout.addWidget(self.cmd_entry, stretch=1)  # stretch=1 占据剩余空间
-
-        # 发送按钮
-        btn_send = QPushButton("发送")
-        btn_send.setFixedWidth(80)  # 固定宽度 80px
-        btn_send.setStyleSheet(
-            "QPushButton{background:#07C160; color:#fff; border:none;"
-            "border-radius:6px; padding:10px; font-weight:bold; font-size:15px;}"
-            "QPushButton:hover{background:#06AD56;}"
-        )
-        # 点击按钮发送指令
-        btn_send.clicked.connect(self._on_send_command)
-        cmd_layout.addWidget(btn_send)
-
-        layout.addWidget(cmd_frame)
-
-        # 通信日志区域
-        log_group = QGroupBox("通信日志")
-        log_layout = QVBoxLayout(log_group)
-        
-        # 日志文本框：只读，用于显示通信记录
-        self.log_text = QTextEdit()
-        self.log_text.setReadOnly(True)  # 设置为只读
-        self.log_text.setFont(QFont("", 13))  # 字体大小 13
-        log_layout.addWidget(self.log_text)
-        
-        # stretch=1 让日志区域占据剩余空间
-        layout.addWidget(log_group, stretch=1)
-
-        return widget
-
-    # ============ 基础功能 ============
-    def _update_clock(self):
-        """
-        更新时钟显示
-        
-        功能：获取当前时间并格式化为 "时:分:秒" 格式
-        调用方式：由 clock_timer 每秒调用一次
-        
-        strftime 格式说明：
-        - %H: 小时 (00-23)
-        - %M: 分钟 (00-59)
-        - %S: 秒 (00-59)
-        """
-        now = datetime.now().strftime("%H:%M:%S")  # 获取当前时间
-        self.lbl_clock.setText(now)  # 更新时钟标签
 
     # ============ 连接逻辑 ============
     def _on_connect_clicked(self):
@@ -973,63 +837,6 @@ class ConveyorPage(BasePage):
         # 启动后台线程执行发送
         threading.Thread(target=do_send, daemon=True).start()
 
-    def _on_send_command(self):
-        """
-        发送指令按钮点击或输入框回车时的处理
-        
-        功能：
-        1. 获取输入框中的指令
-        2. 验证指令非空且已连接
-        3. 发送指令
-        4. 清空输入框
-        
-        支持的指令格式：
-        - 状态查询：status
-        - 电机控制：dj 0/1/2/3
-        - 速度控制：speed 0-13
-        - 模式切换：mode local/remote
-        - 抱闸控制：en 0/1
-        """
-        # 获取输入的指令
-        cmd = self.cmd_entry.text().strip()
-        if not cmd:
-            return  # 空指令，忽略
-        
-        # 检查连接状态
-        if not self.client.is_connected():
-            self.signals.log_message.emit("未连接，无法发送指令")
-            return
-        
-        # 发送指令
-        self._send_command(cmd)
-        
-        # 清空输入框，准备下一次输入
-        self.cmd_entry.clear()
-
-    def _append_log(self, message):
-        """
-        向通信日志追加一条消息
-        
-        参数：
-            message: 日志消息内容
-        
-        功能：
-        1. 添加时间戳前缀
-        2. 追加到日志文本框
-        3. 自动滚动到底部（显示最新消息）
-        
-        日志格式：[HH:MM:SS] 消息内容
-        """
-        # 获取当前时间作为时间戳
-        now = datetime.now().strftime("%H:%M:%S")
-        
-        # 追加日志消息
-        self.log_text.append(f"[{now}] {message}")
-        
-        # 自动滚动到底部，显示最新消息
-        scrollbar = self.log_text.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())  # 滚动到最大值
-
     # ============ BasePage 生命周期 ============
     def on_show(self):
         """
@@ -1038,11 +845,8 @@ class ConveyorPage(BasePage):
         调用场景：
         - 从其他页面切换到此页面
         - 应用程序启动时
-        
-        功能：
-        - 启动时钟定时器，更新时间显示
         """
-        self.clock_timer.start(1000)
+        # 无需额外操作（连接是全局共用的）
 
     def on_hide(self):
         """
@@ -1053,12 +857,10 @@ class ConveyorPage(BasePage):
         - 应用程序退出时
         
         功能：
-        - 停止时钟定时器
         - 停止状态轮询（但不断开 MQTT 连接，连接是全局共用的）
         
         注意：MQTT 连接是全局的，切换页面时不断开
         """
-        self.clock_timer.stop()  # 停止时钟更新
         # 停止并清理轮询定时器
         if hasattr(self, 'poll_timer'):
             self.poll_timer.stop()

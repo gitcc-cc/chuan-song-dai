@@ -491,7 +491,7 @@ class DepthWorker(QThread):
         print("[DepthWorker] ROS2 节点已启动，等待图像...")
         self._node.get_logger().info("DepthWorker 订阅已建立")
 
-        last_print = 0  # 上次打印日志的时间
+        # 终端不再每秒刷帧日志（用户要求：只显示关键事件如启停/MQTT/操作）
         last_rgb_seq = -1  # 上次处理的 RGB 帧序号：用于跳过重复帧
 
         # 主循环：持续处理帧，直到 _running 被设为 False
@@ -593,11 +593,7 @@ class DepthWorker(QThread):
                 self.fps_updated.emit(fps)  # 发射 FPS 到主线程
                 self._last_fps_emit = now
 
-            # 限频打印日志（每 1 秒一次）
-            if now - last_print > 1.0:
-                det_info = f", {len(detections)} dets" if detections else ""
-                print(f"[DepthWorker] 帧{self._frame_count}, FPS:{fps}{det_info}")
-                last_print = now
+            # 终端不再每秒刷帧日志（用户要求：只显示关键事件）
 
         # 循环退出后的清理工作
         if self._node:
